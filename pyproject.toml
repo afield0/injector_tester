@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "injector-tester"
+version = "0.1.0"
+description = "PySide6 desktop client for the injector tester firmware"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6>=6.6",
+  "pyserial>=3.5",
+]
+
+[project.gui-scripts]
+injector-tester = "desktop_app.main:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["desktop_app*"]

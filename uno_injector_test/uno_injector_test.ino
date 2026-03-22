@@ -18,11 +18,19 @@
     STATUS
     MODEL <0|1>
     SET <channel> <rpm> <dutyPercent>
+    SETMASK <mask 1-15> <rpm> <dutyPercent>
     START <channel>
     RUN <channel> <pulses>
     STOP <channel>
+    STARTMASK <mask 1-15>
+    RUNMASK <mask 1-15> <pulses>
+    STOPMASK <mask 1-15>
     STARTALL
     STOPALL
+
+  Grouped mask command semantics:
+    STARTMASK and RUNMASK initialize all selected outputs from the inactive phase
+    and apply timing state together as part of one command handling path.
 
   Pulse models:
     0 = 4-stroke, 1 event every 2 revs  -> Hz = RPM / 120
@@ -145,6 +153,14 @@ bool parseUInt32(const String& s, uint32_t& out) {
   return true;
 }
 
+bool parseChannelMask(const String& s, uint8_t& out) {
+  uint8_t value;
+  if (!parseUInt8(s, value)) return false;
+  if (value == 0 || value > OUTPUT_MASK) return false;
+  out = value;
+  return true;
+}
+
 // -----------------------------
 // Channel control helpers
 // -----------------------------
@@ -161,84 +177,105 @@ void forceOutputsOff(uint8_t mask) {
   PORTB |= setMaskB;
 }
 
-void startChannel(uint8_t idx) {
-  if (idx >= NUM_CHANNELS) return;
-
-  uint8_t bit = channelBits[idx];
+void startMaskChannels(uint8_t mask) {
+  mask &= OUTPUT_MASK;
+  if (mask == 0) return;
 
   noInterrupts();
-  activeMask |= bit;
-  stateMask &= ~bit;             // begin in the inactive phase
-  finiteRunMask &= ~bit;
-  stopAfterLowMask &= ~bit;
-  pulsesRemaining[idx] = 0;
-  ticksLeft[idx] = offTicks[idx]; // begin with OFF delay, then first ON edge
+  activeMask |= mask;
+  stateMask &= ~mask;          // begin in the inactive phase
+  finiteRunMask &= ~mask;
+  stopAfterLowMask &= ~mask;
+
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+    if (mask & channelBits[i]) {
+      pulsesRemaining[i] = 0;
+      ticksLeft[i] = offTicks[i]; // begin with OFF delay, then first ON edge
+    }
+  }
   interrupts();
 
-  forceOutputsOff(bit);
+  forceOutputsOff(mask);
+}
+
+void runMaskChannelsForPulses(uint8_t mask, uint32_t pulses) {
+  mask &= OUTPUT_MASK;
+  if (mask == 0 || pulses == 0) return;
+
+  noInterrupts();
+  activeMask |= mask;
+  stateMask &= ~mask;
+  finiteRunMask |= mask;
+  stopAfterLowMask &= ~mask;
+
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+    if (mask & channelBits[i]) {
+      pulsesRemaining[i] = pulses;
+      ticksLeft[i] = offTicks[i];
+    }
+  }
+  interrupts();
+
+  forceOutputsOff(mask);
+}
+
+void stopMaskChannels(uint8_t mask) {
+  mask &= OUTPUT_MASK;
+  if (mask == 0) return;
+
+  noInterrupts();
+  activeMask &= ~mask;
+  stateMask &= ~mask;
+  finiteRunMask &= ~mask;
+  stopAfterLowMask &= ~mask;
+
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+    if (mask & channelBits[i]) {
+      pulsesRemaining[i] = 0;
+    }
+  }
+  interrupts();
+
+  forceOutputsOff(mask);
+}
+
+void startChannel(uint8_t idx) {
+  if (idx >= NUM_CHANNELS) return;
+  startMaskChannels(channelBits[idx]);
 }
 
 void runChannelForPulses(uint8_t idx, uint32_t pulses) {
   if (idx >= NUM_CHANNELS || pulses == 0) return;
-
-  uint8_t bit = channelBits[idx];
-
-  noInterrupts();
-  activeMask |= bit;
-  stateMask &= ~bit;
-  finiteRunMask |= bit;
-  stopAfterLowMask &= ~bit;
-  pulsesRemaining[idx] = pulses;
-  ticksLeft[idx] = offTicks[idx];
-  interrupts();
-
-  forceOutputsOff(bit);
+  runMaskChannelsForPulses(channelBits[idx], pulses);
 }
 
 void stopChannel(uint8_t idx) {
   if (idx >= NUM_CHANNELS) return;
+  stopMaskChannels(channelBits[idx]);
+}
 
-  uint8_t bit = channelBits[idx];
+void setChannelConfig(uint8_t idx, float rpm, float duty) {
+  if (idx >= NUM_CHANNELS) return;
+  rpmCfg[idx] = rpm;
+  dutyCfg[idx] = duty;
+  recalcChannel(idx);
+}
 
-  noInterrupts();
-  activeMask &= ~bit;
-  stateMask &= ~bit;
-  finiteRunMask &= ~bit;
-  stopAfterLowMask &= ~bit;
-  pulsesRemaining[idx] = 0;
-  interrupts();
-
-  forceOutputsOff(bit);
+void setMaskConfig(uint8_t mask, float rpm, float duty) {
+  mask &= OUTPUT_MASK;
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+    if (mask & channelBits[i]) {
+      setChannelConfig(i, rpm, duty);
+    }
+  }
 }
 
 void startAllChannels() {
-  noInterrupts();
-  activeMask = OUTPUT_MASK;
-  stateMask &= ~OUTPUT_MASK;
-  finiteRunMask &= ~OUTPUT_MASK;
-  stopAfterLowMask &= ~OUTPUT_MASK;
-
-  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
-    pulsesRemaining[i] = 0;
-    ticksLeft[i] = offTicks[i];
-  }
-  interrupts();
-
-  forceOutputsOff(OUTPUT_MASK);
+  startMaskChannels(OUTPUT_MASK);
 }
 
 void stopAllChannels() {
-  noInterrupts();
-  activeMask &= ~OUTPUT_MASK;
-  stateMask &= ~OUTPUT_MASK;
-  finiteRunMask &= ~OUTPUT_MASK;
-  stopAfterLowMask &= ~OUTPUT_MASK;
-  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
-    pulsesRemaining[i] = 0;
-  }
-  interrupts();
-
-  forceOutputsOff(OUTPUT_MASK);
+  stopMaskChannels(OUTPUT_MASK);
 }
 
 // -----------------------------
@@ -497,11 +534,19 @@ void printHelp() {
   Serial.println(F("  STATUS"));
   Serial.println(F("  MODEL <0|1>"));
   Serial.println(F("  SET <channel 1-4> <rpm> <dutyPercent>"));
+  Serial.println(F("  SETMASK <mask 1-15> <rpm> <dutyPercent>"));
   Serial.println(F("  START <channel 1-4>"));
+  Serial.println(F("  STARTMASK <mask 1-15>"));
   Serial.println(F("  RUN <channel 1-4> <pulses>"));
+  Serial.println(F("  RUNMASK <mask 1-15> <pulses>"));
   Serial.println(F("  STOP <channel 1-4>"));
+  Serial.println(F("  STOPMASK <mask 1-15>"));
   Serial.println(F("  STARTALL"));
   Serial.println(F("  STOPALL"));
+  Serial.println(F(""));
+  Serial.println(F("Grouped mask semantics:"));
+  Serial.println(F("  STARTMASK and RUNMASK initialize selected outputs from the"));
+  Serial.println(F("  inactive phase and apply timing state together in one path."));
   Serial.println(F(""));
   Serial.println(F("Models:"));
   Serial.println(F("  0 = 4-stroke, 1 event per 2 revs (Hz = RPM/120)"));
@@ -631,9 +676,7 @@ void handleCommand(String line) {
     }
 
     uint8_t idx = channel - 1;
-    rpmCfg[idx] = rpm;
-    dutyCfg[idx] = duty;
-    recalcChannel(idx);
+    setChannelConfig(idx, rpm, duty);
 
     Serial.print(F("OK SET CH "));
     Serial.print(channel);
@@ -641,6 +684,41 @@ void handleCommand(String line) {
     Serial.print(rpmCfg[idx], 1);
     Serial.print(F(" DUTY "));
     Serial.println(dutyCfg[idx], 1);
+    return;
+  }
+
+  if (cmd == "SETMASK") {
+    String maskStr = getToken(line, 1);
+    String rpmStr = getToken(line, 2);
+    String dutyStr = getToken(line, 3);
+    uint8_t mask;
+
+    if (!parseChannelMask(maskStr, mask)) {
+      Serial.println(F("ERR invalid mask"));
+      return;
+    }
+
+    float rpm = rpmStr.toFloat();
+    float duty = dutyStr.toFloat();
+
+    if (rpm < 1.0f || rpm > 50000.0f) {
+      Serial.println(F("ERR rpm out of range"));
+      return;
+    }
+
+    if (duty <= 0.0f || duty >= 100.0f) {
+      Serial.println(F("ERR duty must be >0 and <100"));
+      return;
+    }
+
+    setMaskConfig(mask, rpm, duty);
+
+    Serial.print(F("OK SETMASK 0x"));
+    Serial.print(mask, HEX);
+    Serial.print(F(" RPM "));
+    Serial.print(rpm, 1);
+    Serial.print(F(" DUTY "));
+    Serial.println(duty, 1);
     return;
   }
 
@@ -657,6 +735,22 @@ void handleCommand(String line) {
 
     Serial.print(F("OK START "));
     Serial.println(channel);
+    return;
+  }
+
+  if (cmd == "STARTMASK") {
+    String maskStr = getToken(line, 1);
+    uint8_t mask;
+
+    if (!parseChannelMask(maskStr, mask)) {
+      Serial.println(F("ERR invalid mask"));
+      return;
+    }
+
+    startMaskChannels(mask);
+
+    Serial.print(F("OK STARTMASK 0x"));
+    Serial.println(mask, HEX);
     return;
   }
 
@@ -685,6 +779,31 @@ void handleCommand(String line) {
     return;
   }
 
+  if (cmd == "RUNMASK") {
+    String maskStr = getToken(line, 1);
+    String pulsesStr = getToken(line, 2);
+    uint8_t mask;
+    uint32_t pulses;
+
+    if (!parseChannelMask(maskStr, mask)) {
+      Serial.println(F("ERR invalid mask"));
+      return;
+    }
+
+    if (!parseUInt32(pulsesStr, pulses) || pulses == 0) {
+      Serial.println(F("ERR pulses must be a positive integer"));
+      return;
+    }
+
+    runMaskChannelsForPulses(mask, pulses);
+
+    Serial.print(F("OK RUNMASK 0x"));
+    Serial.print(mask, HEX);
+    Serial.print(F(" PULSES "));
+    Serial.println(pulses);
+    return;
+  }
+
   if (cmd == "STOP") {
     String chStr = getToken(line, 1);
     uint8_t channel;
@@ -698,6 +817,22 @@ void handleCommand(String line) {
 
     Serial.print(F("OK STOP "));
     Serial.println(channel);
+    return;
+  }
+
+  if (cmd == "STOPMASK") {
+    String maskStr = getToken(line, 1);
+    uint8_t mask;
+
+    if (!parseChannelMask(maskStr, mask)) {
+      Serial.println(F("ERR invalid mask"));
+      return;
+    }
+
+    stopMaskChannels(mask);
+
+    Serial.print(F("OK STOPMASK 0x"));
+    Serial.println(mask, HEX);
     return;
   }
 
