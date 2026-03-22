@@ -8,10 +8,10 @@
   - Share ground between Arduino and injector power supply.
 
   Outputs:
-    CH1 -> D4
-    CH2 -> D5
-    CH3 -> D6
-    CH4 -> D7
+    CH1 -> D5
+    CH2 -> D6
+    CH3 -> D7
+    CH4 -> D8
 
   Serial commands:
     HELP
@@ -19,6 +19,7 @@
     MODEL <0|1>
     SET <channel> <rpm> <dutyPercent>
     START <channel>
+    RUN <channel> <pulses>
     STOP <channel>
     STARTALL
     STOPALL
@@ -37,12 +38,20 @@
 // -----------------------------
 static const uint8_t NUM_CHANNELS = 4;
 
-// D4..D7 on PORTD
-static const uint8_t CH1_BIT = _BV(PD4);
-static const uint8_t CH2_BIT = _BV(PD5);
-static const uint8_t CH3_BIT = _BV(PD6);
-static const uint8_t CH4_BIT = _BV(PD7);
+// Logical channel bits used by the control masks.
+static const uint8_t CH1_BIT = _BV(0);
+static const uint8_t CH2_BIT = _BV(1);
+static const uint8_t CH3_BIT = _BV(2);
+static const uint8_t CH4_BIT = _BV(3);
 static const uint8_t OUTPUT_MASK = CH1_BIT | CH2_BIT | CH3_BIT | CH4_BIT;
+
+// Physical output mapping: CH1..CH3 on D5..D7 (PORTD), CH4 on D8 (PORTB).
+static const uint8_t CH1_PORTD_BIT = _BV(PD5);
+static const uint8_t CH2_PORTD_BIT = _BV(PD6);
+static const uint8_t CH3_PORTD_BIT = _BV(PD7);
+static const uint8_t CH4_PORTB_BIT = _BV(PB0);
+static const uint8_t OUTPUT_MASK_PORTD = CH1_PORTD_BIT | CH2_PORTD_BIT | CH3_PORTD_BIT;
+static const uint8_t OUTPUT_MASK_PORTB = CH4_PORTB_BIT;
 
 static const uint8_t channelBits[NUM_CHANNELS] = {
   CH1_BIT, CH2_BIT, CH3_BIT, CH4_BIT
@@ -64,11 +73,14 @@ enum PulseModel : uint8_t {
 // Shared ISR state
 // -----------------------------
 volatile uint8_t activeMask = 0;   // channels enabled for pulsing
-volatile uint8_t stateMask  = 0;   // channels currently HIGH
+volatile uint8_t stateMask  = 0;   // channels currently in the active pulse phase
+volatile uint8_t finiteRunMask = 0;    // channels running for a fixed pulse count
+volatile uint8_t stopAfterLowMask = 0; // channels that should stop after current HIGH pulse ends
 
 volatile uint16_t onTicks[NUM_CHANNELS];
 volatile uint16_t offTicks[NUM_CHANNELS];
 volatile uint16_t ticksLeft[NUM_CHANNELS];
+volatile uint32_t pulsesRemaining[NUM_CHANNELS];
 
 // model read by serial side and timing calculation
 volatile uint8_t pulseModel = FOUR_STROKE_ONE_EVENT_PER_CYCLE;
@@ -114,11 +126,39 @@ bool parseUInt8(const String& s, uint8_t& out) {
   return true;
 }
 
+bool parseUInt32(const String& s, uint32_t& out) {
+  if (s.length() == 0) return false;
+
+  uint32_t value = 0;
+  for (int i = 0; i < s.length(); i++) {
+    char c = s.charAt(i);
+    if (c < '0' || c > '9') return false;
+
+    uint32_t digit = (uint32_t)(c - '0');
+    if (value > 429496729UL || (value == 429496729UL && digit > 5UL)) {
+      return false;
+    }
+    value = value * 10UL + digit;
+  }
+
+  out = value;
+  return true;
+}
+
 // -----------------------------
 // Channel control helpers
 // -----------------------------
-void forceOutputsLow(uint8_t mask) {
-  PORTD &= ~mask;
+void forceOutputsOff(uint8_t mask) {
+  uint8_t setMaskD = 0;
+  uint8_t setMaskB = 0;
+
+  if (mask & CH1_BIT) setMaskD |= CH1_PORTD_BIT;
+  if (mask & CH2_BIT) setMaskD |= CH2_PORTD_BIT;
+  if (mask & CH3_BIT) setMaskD |= CH3_PORTD_BIT;
+  if (mask & CH4_BIT) setMaskB |= CH4_PORTB_BIT;
+
+  PORTD |= setMaskD;
+  PORTB |= setMaskB;
 }
 
 void startChannel(uint8_t idx) {
@@ -128,11 +168,31 @@ void startChannel(uint8_t idx) {
 
   noInterrupts();
   activeMask |= bit;
-  stateMask &= ~bit;             // force known LOW state
+  stateMask &= ~bit;             // begin in the inactive phase
+  finiteRunMask &= ~bit;
+  stopAfterLowMask &= ~bit;
+  pulsesRemaining[idx] = 0;
   ticksLeft[idx] = offTicks[idx]; // begin with OFF delay, then first ON edge
   interrupts();
 
-  PORTD &= ~bit;
+  forceOutputsOff(bit);
+}
+
+void runChannelForPulses(uint8_t idx, uint32_t pulses) {
+  if (idx >= NUM_CHANNELS || pulses == 0) return;
+
+  uint8_t bit = channelBits[idx];
+
+  noInterrupts();
+  activeMask |= bit;
+  stateMask &= ~bit;
+  finiteRunMask |= bit;
+  stopAfterLowMask &= ~bit;
+  pulsesRemaining[idx] = pulses;
+  ticksLeft[idx] = offTicks[idx];
+  interrupts();
+
+  forceOutputsOff(bit);
 }
 
 void stopChannel(uint8_t idx) {
@@ -143,31 +203,42 @@ void stopChannel(uint8_t idx) {
   noInterrupts();
   activeMask &= ~bit;
   stateMask &= ~bit;
+  finiteRunMask &= ~bit;
+  stopAfterLowMask &= ~bit;
+  pulsesRemaining[idx] = 0;
   interrupts();
 
-  PORTD &= ~bit;
+  forceOutputsOff(bit);
 }
 
 void startAllChannels() {
   noInterrupts();
   activeMask = OUTPUT_MASK;
   stateMask &= ~OUTPUT_MASK;
+  finiteRunMask &= ~OUTPUT_MASK;
+  stopAfterLowMask &= ~OUTPUT_MASK;
 
   for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+    pulsesRemaining[i] = 0;
     ticksLeft[i] = offTicks[i];
   }
   interrupts();
 
-  PORTD &= ~OUTPUT_MASK;
+  forceOutputsOff(OUTPUT_MASK);
 }
 
 void stopAllChannels() {
   noInterrupts();
   activeMask &= ~OUTPUT_MASK;
   stateMask &= ~OUTPUT_MASK;
+  finiteRunMask &= ~OUTPUT_MASK;
+  stopAfterLowMask &= ~OUTPUT_MASK;
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+    pulsesRemaining[i] = 0;
+  }
   interrupts();
 
-  PORTD &= ~OUTPUT_MASK;
+  forceOutputsOff(OUTPUT_MASK);
 }
 
 // -----------------------------
@@ -235,11 +306,28 @@ ISR(TIMER1_COMPA_vect) {
       if (stateMask & CH1_BIT) {
         stateMask &= ~CH1_BIT;
         clearMask |= CH1_BIT;
-        ticksLeft[0] = offTicks[0];
+        if (stopAfterLowMask & CH1_BIT) {
+          activeMask &= ~CH1_BIT;
+          finiteRunMask &= ~CH1_BIT;
+          stopAfterLowMask &= ~CH1_BIT;
+          pulsesRemaining[0] = 0;
+        } else {
+          ticksLeft[0] = offTicks[0];
+        }
       } else {
         stateMask |= CH1_BIT;
         setMask |= CH1_BIT;
         ticksLeft[0] = onTicks[0];
+        if (finiteRunMask & CH1_BIT) {
+          uint32_t remaining = pulsesRemaining[0];
+          if (remaining > 0) {
+            remaining--;
+            pulsesRemaining[0] = remaining;
+            if (remaining == 0) {
+              stopAfterLowMask |= CH1_BIT;
+            }
+          }
+        }
       }
     }
   }
@@ -252,11 +340,28 @@ ISR(TIMER1_COMPA_vect) {
       if (stateMask & CH2_BIT) {
         stateMask &= ~CH2_BIT;
         clearMask |= CH2_BIT;
-        ticksLeft[1] = offTicks[1];
+        if (stopAfterLowMask & CH2_BIT) {
+          activeMask &= ~CH2_BIT;
+          finiteRunMask &= ~CH2_BIT;
+          stopAfterLowMask &= ~CH2_BIT;
+          pulsesRemaining[1] = 0;
+        } else {
+          ticksLeft[1] = offTicks[1];
+        }
       } else {
         stateMask |= CH2_BIT;
         setMask |= CH2_BIT;
         ticksLeft[1] = onTicks[1];
+        if (finiteRunMask & CH2_BIT) {
+          uint32_t remaining = pulsesRemaining[1];
+          if (remaining > 0) {
+            remaining--;
+            pulsesRemaining[1] = remaining;
+            if (remaining == 0) {
+              stopAfterLowMask |= CH2_BIT;
+            }
+          }
+        }
       }
     }
   }
@@ -269,11 +374,28 @@ ISR(TIMER1_COMPA_vect) {
       if (stateMask & CH3_BIT) {
         stateMask &= ~CH3_BIT;
         clearMask |= CH3_BIT;
-        ticksLeft[2] = offTicks[2];
+        if (stopAfterLowMask & CH3_BIT) {
+          activeMask &= ~CH3_BIT;
+          finiteRunMask &= ~CH3_BIT;
+          stopAfterLowMask &= ~CH3_BIT;
+          pulsesRemaining[2] = 0;
+        } else {
+          ticksLeft[2] = offTicks[2];
+        }
       } else {
         stateMask |= CH3_BIT;
         setMask |= CH3_BIT;
         ticksLeft[2] = onTicks[2];
+        if (finiteRunMask & CH3_BIT) {
+          uint32_t remaining = pulsesRemaining[2];
+          if (remaining > 0) {
+            remaining--;
+            pulsesRemaining[2] = remaining;
+            if (remaining == 0) {
+              stopAfterLowMask |= CH3_BIT;
+            }
+          }
+        }
       }
     }
   }
@@ -286,20 +408,57 @@ ISR(TIMER1_COMPA_vect) {
       if (stateMask & CH4_BIT) {
         stateMask &= ~CH4_BIT;
         clearMask |= CH4_BIT;
-        ticksLeft[3] = offTicks[3];
+        if (stopAfterLowMask & CH4_BIT) {
+          activeMask &= ~CH4_BIT;
+          finiteRunMask &= ~CH4_BIT;
+          stopAfterLowMask &= ~CH4_BIT;
+          pulsesRemaining[3] = 0;
+        } else {
+          ticksLeft[3] = offTicks[3];
+        }
       } else {
         stateMask |= CH4_BIT;
         setMask |= CH4_BIT;
         ticksLeft[3] = onTicks[3];
+        if (finiteRunMask & CH4_BIT) {
+          uint32_t remaining = pulsesRemaining[3];
+          if (remaining > 0) {
+            remaining--;
+            pulsesRemaining[3] = remaining;
+            if (remaining == 0) {
+              stopAfterLowMask |= CH4_BIT;
+            }
+          }
+        }
       }
     }
   }
 
-  // Single port commit
+  // Active-low outputs: setMask drives the pin LOW (injector ON), clearMask drives it HIGH (injector OFF).
+  uint8_t setMaskD = 0;
+  uint8_t clearMaskD = 0;
+  uint8_t setMaskB = 0;
+  uint8_t clearMaskB = 0;
+
+  if (setMask & CH1_BIT) setMaskD |= CH1_PORTD_BIT;
+  if (setMask & CH2_BIT) setMaskD |= CH2_PORTD_BIT;
+  if (setMask & CH3_BIT) setMaskD |= CH3_PORTD_BIT;
+  if (setMask & CH4_BIT) setMaskB |= CH4_PORTB_BIT;
+
+  if (clearMask & CH1_BIT) clearMaskD |= CH1_PORTD_BIT;
+  if (clearMask & CH2_BIT) clearMaskD |= CH2_PORTD_BIT;
+  if (clearMask & CH3_BIT) clearMaskD |= CH3_PORTD_BIT;
+  if (clearMask & CH4_BIT) clearMaskB |= CH4_PORTB_BIT;
+
   uint8_t pd = PORTD;
-  pd |= setMask;
-  pd &= ~clearMask;
+  pd &= ~setMaskD;
+  pd |= clearMaskD;
   PORTD = pd;
+
+  uint8_t pb = PORTB;
+  pb &= ~setMaskB;
+  pb |= clearMaskB;
+  PORTB = pb;
 }
 
 // -----------------------------
@@ -339,6 +498,7 @@ void printHelp() {
   Serial.println(F("  MODEL <0|1>"));
   Serial.println(F("  SET <channel 1-4> <rpm> <dutyPercent>"));
   Serial.println(F("  START <channel 1-4>"));
+  Serial.println(F("  RUN <channel 1-4> <pulses>"));
   Serial.println(F("  STOP <channel 1-4>"));
   Serial.println(F("  STARTALL"));
   Serial.println(F("  STOPALL"));
@@ -349,17 +509,21 @@ void printHelp() {
 }
 
 void printStatus() {
-  uint8_t active, state, model;
+  uint8_t active, state, model, finite, stopAfterLow;
   uint16_t onT[NUM_CHANNELS], offT[NUM_CHANNELS], leftT[NUM_CHANNELS];
+  uint32_t pulsesLeft[NUM_CHANNELS];
 
   noInterrupts();
   active = activeMask;
   state = stateMask;
   model = pulseModel;
+  finite = finiteRunMask;
+  stopAfterLow = stopAfterLowMask;
   for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
     onT[i] = onTicks[i];
     offT[i] = offTicks[i];
     leftT[i] = ticksLeft[i];
+    pulsesLeft[i] = pulsesRemaining[i];
   }
   interrupts();
 
@@ -380,6 +544,8 @@ void printStatus() {
     Serial.print((active & bit) ? 1 : 0);
     Serial.print(F(" state="));
     Serial.print((state & bit) ? 1 : 0);
+    Serial.print(F(" mode="));
+    Serial.print((finite & bit) ? F("COUNTED") : F("CONT"));
     Serial.print(F(" rpm="));
     Serial.print(rpmCfg[i], 1);
     Serial.print(F(" duty="));
@@ -389,7 +555,11 @@ void printStatus() {
     Serial.print(F(" offTicks="));
     Serial.print(offT[i]);
     Serial.print(F(" ticksLeft="));
-    Serial.println(leftT[i]);
+    Serial.print(leftT[i]);
+    Serial.print(F(" pulsesLeft="));
+    Serial.print(pulsesLeft[i]);
+    Serial.print(F(" stopAfterLow="));
+    Serial.println((stopAfterLow & bit) ? 1 : 0);
   }
 }
 
@@ -490,6 +660,31 @@ void handleCommand(String line) {
     return;
   }
 
+  if (cmd == "RUN") {
+    String chStr = getToken(line, 1);
+    String pulsesStr = getToken(line, 2);
+    uint8_t channel;
+    uint32_t pulses;
+
+    if (!parseUInt8(chStr, channel) || channel < 1 || channel > NUM_CHANNELS) {
+      Serial.println(F("ERR invalid channel"));
+      return;
+    }
+
+    if (!parseUInt32(pulsesStr, pulses) || pulses == 0) {
+      Serial.println(F("ERR pulses must be a positive integer"));
+      return;
+    }
+
+    runChannelForPulses(channel - 1, pulses);
+
+    Serial.print(F("OK RUN "));
+    Serial.print(channel);
+    Serial.print(F(" PULSES "));
+    Serial.println(pulses);
+    return;
+  }
+
   if (cmd == "STOP") {
     String chStr = getToken(line, 1);
     uint8_t channel;
@@ -544,9 +739,10 @@ void serviceSerial() {
 void setup() {
   Serial.begin(115200);
 
-  // D4-D7 as outputs
-  DDRD |= OUTPUT_MASK;
-  PORTD &= ~OUTPUT_MASK;
+  // D5-D7 on PORTD, D8 on PORTB as outputs
+  DDRD |= OUTPUT_MASK_PORTD;
+  DDRB |= OUTPUT_MASK_PORTB;
+  forceOutputsOff(OUTPUT_MASK);
 
   // Defaults
   for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
