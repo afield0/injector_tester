@@ -163,36 +163,36 @@ class MainWindow(QMainWindow):
         self.selected_action_mode_label.setWordWrap(True)
         self.selected_action_mode_label.setTextFormat(Qt.TextFormat.PlainText)
 
-        self.apply_button = QPushButton("Apply Config")
-        self.start_selected_button = QPushButton("Start Selected")
         self.run_selected_button = QPushButton("Run Selected")
-        self.stop_selected_button = QPushButton("Stop Selected")
-        self.start_all_button = QPushButton("Start All")
         self.stop_all_button = QPushButton("Stop All")
         self.read_status_button = QPushButton("Read Status")
         self.help_button = QPushButton("Help")
         self.stop_all_button.setStyleSheet(
             "background-color: #b91c1c; color: white; font-weight: 700; min-height: 44px;"
         )
+        self.run_selected_button.setToolTip(
+            "Apply the current model, RPM, and duty to the checked channels, then run them using the selected run mode."
+        )
+        self.stop_all_button.setToolTip(
+            "Emergency stop for all four channels regardless of the checkbox selection."
+        )
+        self.read_status_button.setToolTip(
+            "Query the firmware and refresh the status table with the current live state."
+        )
+        self.help_button.setToolTip(
+            "Request the firmware HELP text and protocol summary."
+        )
 
-        self.apply_button.clicked.connect(self._apply_config)
-        self.start_selected_button.clicked.connect(self._start_selected)
         self.run_selected_button.clicked.connect(self._run_selected)
-        self.stop_selected_button.clicked.connect(self._controller.stop_selected)
-        self.start_all_button.clicked.connect(self._controller.start_all)
         self.stop_all_button.clicked.connect(self._controller.stop_all)
         self.read_status_button.clicked.connect(self._controller.refresh_status)
         self.help_button.clicked.connect(self._controller.request_help)
 
         layout.addWidget(self.selected_action_mode_label, 0, 0, 1, 4)
-        layout.addWidget(self.apply_button, 1, 0)
-        layout.addWidget(self.start_selected_button, 1, 1)
-        layout.addWidget(self.run_selected_button, 1, 2)
-        layout.addWidget(self.stop_selected_button, 1, 3)
-        layout.addWidget(self.start_all_button, 2, 0)
-        layout.addWidget(self.read_status_button, 2, 1)
-        layout.addWidget(self.help_button, 2, 2)
-        layout.addWidget(self.stop_all_button, 2, 3)
+        layout.addWidget(self.run_selected_button, 1, 0, 1, 2)
+        layout.addWidget(self.read_status_button, 1, 2)
+        layout.addWidget(self.help_button, 1, 3)
+        layout.addWidget(self.stop_all_button, 2, 0, 1, 4)
 
         return group
 
@@ -267,20 +267,23 @@ class MainWindow(QMainWindow):
         counted = self.run_mode_combo.currentData() == "counted"
         self.pulses_spin.setEnabled(counted)
 
-    def _apply_config(self) -> None:
+    def _validate_run_config(self) -> bool:
         if not self.rpm_spin.text().strip():
             self._controller.report_validation_error("RPM is required before sending commands")
-            return
+            return False
         if not self.duty_spin.text().strip():
             self._controller.report_validation_error("Duty is required before sending commands")
-            return
+            return False
+        return True
+
+    def _apply_run_config(self) -> None:
         self._controller.set_model(int(self.model_combo.currentData()))
         self._controller.apply_channel_settings(self.rpm_spin.value(), self.duty_spin.value())
 
-    def _start_selected(self) -> None:
-        self._controller.start_selected()
-
     def _run_selected(self) -> None:
+        if not self._validate_run_config():
+            return
+        self._apply_run_config()
         if self.run_mode_combo.currentData() == "counted":
             if not self.pulses_spin.text().strip():
                 self._controller.report_validation_error("Pulse count is required before sending commands")
@@ -328,13 +331,7 @@ class MainWindow(QMainWindow):
             self.model_combo.blockSignals(False)
 
         any_selected = bool(state.selected_mask)
-        for button in (
-            self.apply_button,
-            self.start_selected_button,
-            self.run_selected_button,
-            self.stop_selected_button,
-        ):
-            button.setEnabled(any_selected)
+        self.run_selected_button.setEnabled(any_selected)
 
         for index, channel in enumerate(state.channels):
             selected = bool(state.selected_mask & (1 << index))
