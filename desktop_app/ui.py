@@ -281,22 +281,22 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         selector_row = QHBoxLayout()
-        selector_row.addWidget(QLabel("Test Type"))
+        selector_row.addWidget(QLabel("Mode"))
         self.test_type_combo = QComboBox()
-        self.test_type_combo.addItem("Simple", 0)
-        self.test_type_combo.addItem("Advanced", 1)
+        self.test_type_combo.addItem("Simple", "simple")
+        self.test_type_combo.addItem("Advanced", "advanced")
         self.test_type_combo.currentIndexChanged.connect(self._sync_test_type_page)
         selector_row.addWidget(self.test_type_combo, stretch=1)
         layout.addLayout(selector_row)
 
         self.test_type_stack = QStackedWidget()
-        self.test_type_stack.addWidget(self._build_simple_test_inputs())
+        self.test_type_stack.addWidget(self._build_basic_testing_tab())
         self.test_type_stack.addWidget(self._build_advanced_testing_tab())
         layout.addWidget(self.test_type_stack, stretch=2)
         layout.addWidget(self._build_channel_selection_panel(), stretch=1)
         return page
 
-    def _build_simple_test_inputs(self) -> QWidget:
+    def _build_basic_testing_tab(self) -> QWidget:
         page = QWidget()
         layout = QFormLayout(page)
 
@@ -584,7 +584,9 @@ class MainWindow(QMainWindow):
         self._controller.set_test_mode(str(self.test_mode_combo.currentData()))
 
     def _sync_test_type_page(self) -> None:
-        self.test_type_stack.setCurrentIndex(self.test_type_combo.currentIndex())
+        mode = str(self.test_type_combo.currentData())
+        self.test_type_stack.setCurrentIndex(0 if mode == "simple" else 1)
+        self._controller.set_wizard_test_kind(mode)
 
     def _show_previous_wizard_page(self) -> None:
         index = self.wizard_stack.currentIndex()
@@ -664,6 +666,17 @@ class MainWindow(QMainWindow):
         self.error_log_text.verticalScrollBar().setValue(self.error_log_text.verticalScrollBar().maximum())
 
     def _validate_run_config(self) -> bool:
+        wizard_test_kind = self._controller.state.wizard_test_kind
+        if wizard_test_kind == "advanced":
+            self._refresh_advanced_calculation()
+            result = self._latest_advanced_result
+            if result is None or not result.is_valid:
+                self._controller.report_validation_error(
+                    "Advanced mode configuration is incomplete. Resolve highlighted issues before running."
+                )
+                return False
+            return True
+
         if not self.rpm_spin.text().strip():
             self._controller.report_validation_error("RPM is required before sending commands")
             return False
@@ -675,6 +688,20 @@ class MainWindow(QMainWindow):
     def _run_selected(self) -> None:
         if not self._validate_run_config():
             return
+        wizard_test_kind = self._controller.state.wizard_test_kind
+        if wizard_test_kind == "advanced":
+            result = self._latest_advanced_result
+            if result is None:
+                self._controller.report_validation_error("Advanced mode did not produce a calculation result.")
+                return
+            self._controller.run_selected_test(
+                ADVANCED_TEST_MODEL,
+                self.advanced_rpm_spin.value(),
+                result.duty_cycle_percent,
+                result.pulse_count,
+            )
+            return
+
         if not self.pulses_spin.text().strip():
             self._controller.report_validation_error("Pulse count is required before sending commands")
             return
@@ -980,6 +1007,13 @@ class MainWindow(QMainWindow):
             self.test_mode_combo.blockSignals(True)
             self.test_mode_combo.setCurrentIndex(test_mode_index)
             self.test_mode_combo.blockSignals(False)
+
+        test_kind_index = self.test_type_combo.findData(state.wizard_test_kind)
+        if test_kind_index >= 0 and self.test_type_combo.currentIndex() != test_kind_index:
+            self.test_type_combo.blockSignals(True)
+            self.test_type_combo.setCurrentIndex(test_kind_index)
+            self.test_type_combo.blockSignals(False)
+        self.test_type_stack.setCurrentIndex(0 if state.wizard_test_kind == "simple" else 1)
 
         self.progress_label.setText(state.test_progress.label)
         self.progress_bar.setRange(state.test_progress.minimum, state.test_progress.maximum)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
@@ -78,6 +79,7 @@ class AppState:
     connection_verified: bool = False
     verification_message: str = "Connection not verified"
     test_mode: str = "sequential"
+    wizard_test_kind: Literal["simple", "advanced"] = "simple"
     firmware_status: FirmwareStatus = field(default_factory=FirmwareStatus)
     test_progress: TestProgress = field(default_factory=TestProgress)
     auto_poll_enabled: bool = True
@@ -541,6 +543,12 @@ class AppController(QObject):
                 selected_action_mode_label=self._action_mode_label(test_mode),
             )
         )
+
+    def set_wizard_test_kind(self, wizard_test_kind: Literal["simple", "advanced"]) -> None:
+        if wizard_test_kind not in {"simple", "advanced"}:
+            self._set_error(f"Unsupported wizard test mode: {wizard_test_kind}")
+            return
+        self._set_state(replace(self._state, wizard_test_kind=wizard_test_kind))
 
     def set_model(self, model: int) -> None:
         self.send_command(model_command(model))
