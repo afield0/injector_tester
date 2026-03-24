@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QPlainTextEdit,
@@ -45,15 +47,17 @@ class MainWindow(QMainWindow):
         self._syncing_injector_size = False
         self._updating_deadtime_table = False
         self._latest_advanced_result: AdvancedCalculationResult | None = None
+        self._selected_port: str | None = None
+        self._port_actions: dict[str, QAction] = {}
+        self._poll_interval_actions: dict[int, QAction] = {}
         self.setWindowTitle("Injector Tester")
         self.resize(1240, 820)
+        self._build_menu_bar()
 
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
-        layout.addWidget(self._build_safety_banner())
-        layout.addWidget(self._build_connection_bar())
         layout.addWidget(self._build_error_banner())
         layout.addWidget(self._build_top_panels())
         layout.addWidget(self._build_action_panel())
@@ -64,42 +68,66 @@ class MainWindow(QMainWindow):
         self.render(controller.state)
         self._refresh_advanced_calculation()
 
-    def _build_safety_banner(self) -> QGroupBox:
-        group = QGroupBox("Injector Driver Safety")
-        layout = QVBoxLayout(group)
-        self.safety_warning_label = QLabel()
-        self.safety_warning_label.setWordWrap(True)
-        self.safety_warning_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.safety_warning_label.setStyleSheet("color: #7a1f00; font-weight: 600;")
-        layout.addWidget(self.safety_warning_label)
-        return group
+    def _build_menu_bar(self) -> None:
+        menu_bar = self.menuBar()
 
-    def _build_connection_bar(self) -> QGroupBox:
-        group = QGroupBox("Connection")
-        layout = QHBoxLayout(group)
+        file_menu = menu_bar.addMenu("File")
+        self.exit_action = QAction("Exit", self)
+        self.exit_action.triggered.connect(self.close)
+        file_menu.addAction(self.exit_action)
 
-        self.port_combo = QComboBox()
-        self.port_combo.setEditable(True)
-        self.port_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.port_combo.setMinimumContentsLength(22)
+        communications_menu = menu_bar.addMenu("Communications")
+        self.port_menu = communications_menu.addMenu("Port")
+        self.port_action_group = QActionGroup(self)
+        self.port_action_group.setExclusive(True)
 
-        self.refresh_ports_button = QPushButton("Refresh Ports")
-        self.connect_button = QPushButton("Connect")
-        self.disconnect_button = QPushButton("Disconnect")
-        self.status_label = QLabel("Disconnected")
-        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.refresh_ports_action = QAction("Refresh Ports", self)
+        self.refresh_ports_action.triggered.connect(self._refresh_ports)
 
-        self.refresh_ports_button.clicked.connect(self._refresh_ports)
-        self.connect_button.clicked.connect(self._connect_port)
-        self.disconnect_button.clicked.connect(self._controller.disconnect_port)
+        communications_menu.addSeparator()
+        self.read_status_action = QAction("Read Status", self)
+        self.read_status_action.triggered.connect(self._controller.refresh_status)
+        communications_menu.addAction(self.read_status_action)
+        communications_menu.addSeparator()
 
-        layout.addWidget(QLabel("Port"))
-        layout.addWidget(self.port_combo, stretch=2)
-        layout.addWidget(self.refresh_ports_button)
-        layout.addWidget(self.connect_button)
-        layout.addWidget(self.disconnect_button)
-        layout.addWidget(self.status_label, stretch=3)
-        return group
+        self.connect_action = QAction("Connect", self)
+        self.connect_action.triggered.connect(self._connect_port)
+        communications_menu.addAction(self.connect_action)
+
+        self.disconnect_action = QAction("Disconnect", self)
+        self.disconnect_action.triggered.connect(self._controller.disconnect_port)
+        communications_menu.addAction(self.disconnect_action)
+
+        status_menu = menu_bar.addMenu("Status")
+        self.auto_poll_action = QAction("Auto-poll", self)
+        self.auto_poll_action.setCheckable(True)
+        self.auto_poll_action.setChecked(True)
+        self.auto_poll_action.toggled.connect(self._sync_auto_poll_enabled)
+        status_menu.addAction(self.auto_poll_action)
+
+        self.poll_interval_menu = status_menu.addMenu("Poll Interval")
+        self.poll_interval_group = QActionGroup(self)
+        self.poll_interval_group.setExclusive(True)
+        for label, interval_ms in (
+            ("0.25 s", 250),
+            ("0.5 s", 500),
+            ("1.0 s", 1000),
+            ("2.0 s", 2000),
+        ):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setData(interval_ms)
+            action.triggered.connect(self._sync_auto_poll_interval)
+            self.poll_interval_group.addAction(action)
+            self.poll_interval_menu.addAction(action)
+            self._poll_interval_actions[interval_ms] = action
+        if 1000 in self._poll_interval_actions:
+            self._poll_interval_actions[1000].setChecked(True)
+
+        help_menu = menu_bar.addMenu("Help")
+        self.about_action = QAction("About", self)
+        self.about_action.triggered.connect(self._show_about_dialog)
+        help_menu.addAction(self.about_action)
 
     def _build_error_banner(self) -> QGroupBox:
         group = QGroupBox("Errors")
@@ -151,18 +179,6 @@ class MainWindow(QMainWindow):
         self.test_mode_combo.addItem("Sequential", "sequential")
         self.test_mode_combo.setCurrentIndex(1)
         self.test_mode_combo.currentIndexChanged.connect(self._sync_test_mode)
-
-        self.auto_poll_checkbox = QCheckBox("Auto-poll STATUS after test start")
-        self.auto_poll_checkbox.setChecked(True)
-        self.auto_poll_checkbox.stateChanged.connect(self._sync_auto_poll_enabled)
-
-        self.auto_poll_interval_combo = QComboBox()
-        self.auto_poll_interval_combo.addItem("0.25 s", 250)
-        self.auto_poll_interval_combo.addItem("0.5 s", 500)
-        self.auto_poll_interval_combo.addItem("1.0 s", 1000)
-        self.auto_poll_interval_combo.addItem("2.0 s", 2000)
-        self.auto_poll_interval_combo.setCurrentIndex(2)
-        self.auto_poll_interval_combo.currentIndexChanged.connect(self._sync_auto_poll_interval)
 
         self.pulses_spin = QSpinBox()
         self.pulses_spin.setRange(1, 2_000_000_000)
@@ -311,7 +327,6 @@ class MainWindow(QMainWindow):
         self.stop_all_button = QPushButton("Stop All")
         self.read_status_button = QPushButton("Read Status")
         self.help_button = QPushButton("Help")
-        self.poll_interval_label = QLabel("Poll Interval")
         self.stop_all_button.setStyleSheet(
             "background-color: #b91c1c; color: white; font-weight: 700; min-height: 44px;"
         )
@@ -334,13 +349,10 @@ class MainWindow(QMainWindow):
         self.help_button.clicked.connect(self._controller.request_help)
 
         layout.addWidget(self.selected_action_mode_label, 0, 0, 1, 4)
-        layout.addWidget(self.auto_poll_checkbox, 1, 0, 1, 2)
-        layout.addWidget(self.poll_interval_label, 1, 2)
-        layout.addWidget(self.auto_poll_interval_combo, 1, 3)
-        layout.addWidget(self.run_selected_button, 2, 0, 1, 2)
-        layout.addWidget(self.read_status_button, 2, 2)
-        layout.addWidget(self.help_button, 2, 3)
-        layout.addWidget(self.stop_all_button, 3, 0, 1, 4)
+        layout.addWidget(self.run_selected_button, 1, 0, 1, 2)
+        layout.addWidget(self.read_status_button, 1, 2)
+        layout.addWidget(self.help_button, 1, 3)
+        layout.addWidget(self.stop_all_button, 2, 0, 1, 4)
 
         return group
 
@@ -399,34 +411,68 @@ class MainWindow(QMainWindow):
         return group
 
     def _refresh_ports(self) -> None:
-        current_text = self.port_combo.currentText().strip()
         ports = self._controller.list_ports()
+        if self._selected_port not in ports:
+            self._selected_port = ports[0] if ports else None
 
-        self.port_combo.blockSignals(True)
-        self.port_combo.clear()
-        self.port_combo.addItems(ports)
-        if current_text:
-            if current_text not in ports:
-                self.port_combo.addItem(current_text)
-            self.port_combo.setCurrentText(current_text)
-        elif ports:
-            self.port_combo.setCurrentIndex(0)
-        else:
-            self.port_combo.setEditText("/dev/ttyACM0")
-        self.port_combo.blockSignals(False)
+        self.port_menu.clear()
+        self._port_actions.clear()
+        for action in self.port_action_group.actions():
+            self.port_action_group.removeAction(action)
+
+        for port in ports:
+            action = QAction(port, self)
+            action.setCheckable(True)
+            action.setChecked(port == self._selected_port)
+            action.triggered.connect(lambda checked, port_name=port: self._select_port(port_name, checked))
+            self.port_action_group.addAction(action)
+            self.port_menu.addAction(action)
+            self._port_actions[port] = action
+
+        if not ports:
+            no_ports_action = QAction("No ports found", self)
+            no_ports_action.setEnabled(False)
+            self.port_menu.addAction(no_ports_action)
+
+        self.port_menu.addSeparator()
+        self.port_menu.addAction(self.refresh_ports_action)
+        self.connect_action.setEnabled((not self._controller.state.connected) and bool(self._selected_port))
 
     def _connect_port(self) -> None:
-        self._controller.connect_port(self.port_combo.currentText().strip())
+        if not self._selected_port:
+            self._controller.report_validation_error(
+                "Select a serial port from Communications > Port before connecting"
+            )
+            return
+        self._controller.connect_port(self._selected_port)
+
+    def _select_port(self, port: str, checked: bool) -> None:
+        if not checked:
+            return
+        self._selected_port = port
+        self.connect_action.setEnabled((not self._controller.state.connected) and bool(self._selected_port))
 
     def _sync_test_mode(self) -> None:
         self._controller.set_test_mode(str(self.test_mode_combo.currentData()))
 
-    def _sync_auto_poll_enabled(self) -> None:
-        self._controller.set_auto_poll_enabled(self.auto_poll_checkbox.isChecked())
+    def _sync_auto_poll_enabled(self, checked: bool) -> None:
+        self._controller.set_auto_poll_enabled(checked)
 
     def _sync_auto_poll_interval(self) -> None:
-        interval_ms = int(self.auto_poll_interval_combo.currentData())
+        action = self.sender()
+        if not isinstance(action, QAction):
+            return
+        interval_ms = int(action.data())
         self._controller.set_auto_poll_interval_ms(interval_ms)
+
+    def _show_about_dialog(self) -> None:
+        QMessageBox.about(
+            self,
+            "About Injector Tester",
+            "Injector Tester\n\n"
+            "PySide6 desktop client for the injector test bench.\n"
+            "Supports basic counted testing, advanced test setup, live status reads, and serial log inspection.",
+        )
 
     def _validate_run_config(self) -> bool:
         if not self.rpm_spin.text().strip():
@@ -637,10 +683,15 @@ class MainWindow(QMainWindow):
         item.setText(value)
 
     def render(self, state: AppState) -> None:
-        self.safety_warning_label.setText(state.safety_warning)
-        self.status_label.setText(state.status_message)
-        self.disconnect_button.setEnabled(state.connected)
-        self.connect_button.setEnabled(not state.connected)
+        self.statusBar().showMessage(state.status_message)
+        if state.connection_port:
+            self._selected_port = state.connection_port
+        for port, action in self._port_actions.items():
+            action.blockSignals(True)
+            action.setChecked(port == self._selected_port)
+            action.blockSignals(False)
+        self.connect_action.setEnabled((not state.connected) and bool(self._selected_port))
+        self.disconnect_action.setEnabled(state.connected)
         self.selected_action_mode_label.setText(state.selected_action_mode_label)
         if state.has_error:
             self.error_label.setText(state.last_error_message)
@@ -662,16 +713,16 @@ class MainWindow(QMainWindow):
             self.model_combo.setCurrentIndex(model_index)
             self.model_combo.blockSignals(False)
 
-        interval_index = self.auto_poll_interval_combo.findData(state.auto_poll_interval_ms)
-        if interval_index >= 0 and self.auto_poll_interval_combo.currentIndex() != interval_index:
-            self.auto_poll_interval_combo.blockSignals(True)
-            self.auto_poll_interval_combo.setCurrentIndex(interval_index)
-            self.auto_poll_interval_combo.blockSignals(False)
+        interval_action = self._poll_interval_actions.get(state.auto_poll_interval_ms)
+        if interval_action is not None and not interval_action.isChecked():
+            interval_action.blockSignals(True)
+            interval_action.setChecked(True)
+            interval_action.blockSignals(False)
 
-        if self.auto_poll_checkbox.isChecked() != state.auto_poll_enabled:
-            self.auto_poll_checkbox.blockSignals(True)
-            self.auto_poll_checkbox.setChecked(state.auto_poll_enabled)
-            self.auto_poll_checkbox.blockSignals(False)
+        if self.auto_poll_action.isChecked() != state.auto_poll_enabled:
+            self.auto_poll_action.blockSignals(True)
+            self.auto_poll_action.setChecked(state.auto_poll_enabled)
+            self.auto_poll_action.blockSignals(False)
 
         test_mode_index = self.test_mode_combo.findData(state.test_mode)
         if test_mode_index >= 0 and self.test_mode_combo.currentIndex() != test_mode_index:
