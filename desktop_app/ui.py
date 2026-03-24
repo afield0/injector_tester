@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -40,6 +40,76 @@ from .advanced_testing import (
 from .state import AppController, AppState
 
 
+class DeadtimeGraphWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._curve: tuple[DeadtimePoint, ...] = ()
+        self.setMinimumHeight(220)
+
+    def set_curve(self, curve: tuple[DeadtimePoint, ...]) -> None:
+        self._curve = tuple(sorted(curve, key=lambda point: point.voltage))
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#f8fafc"))
+
+        plot_rect = self.rect().adjusted(52, 16, -20, -34)
+        if plot_rect.width() <= 0 or plot_rect.height() <= 0:
+            return
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(QColor("#cbd5e1"), 1))
+        painter.drawRect(plot_rect)
+
+        if len(self._curve) < 1:
+            painter.setPen(QColor("#64748b"))
+            painter.drawText(plot_rect, Qt.AlignmentFlag.AlignCenter, "Add deadtime points to display the curve")
+            return
+
+        min_voltage = min(point.voltage for point in self._curve)
+        max_voltage = max(point.voltage for point in self._curve)
+        min_deadtime = min(point.deadtime_ms for point in self._curve)
+        max_deadtime = max(point.deadtime_ms for point in self._curve)
+
+        if min_voltage == max_voltage:
+            min_voltage -= 1.0
+            max_voltage += 1.0
+        if min_deadtime == max_deadtime:
+            min_deadtime -= 0.1
+            max_deadtime += 0.1
+
+        def map_point(point: DeadtimePoint) -> QPointF:
+            x_ratio = (point.voltage - min_voltage) / (max_voltage - min_voltage)
+            y_ratio = (point.deadtime_ms - min_deadtime) / (max_deadtime - min_deadtime)
+            return QPointF(
+                plot_rect.left() + (x_ratio * plot_rect.width()),
+                plot_rect.bottom() - (y_ratio * plot_rect.height()),
+            )
+
+        painter.setPen(QPen(QColor("#e2e8f0"), 1))
+        for step in range(1, 4):
+            x = plot_rect.left() + int((step / 4) * plot_rect.width())
+            y = plot_rect.top() + int((step / 4) * plot_rect.height())
+            painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
+            painter.drawLine(plot_rect.left(), y, plot_rect.right(), y)
+
+        painter.setPen(QColor("#475569"))
+        painter.drawText(QRectF(0, plot_rect.bottom() - 10, plot_rect.left() - 8, 20), Qt.AlignmentFlag.AlignRight, f"{min_deadtime:.2f} ms")
+        painter.drawText(QRectF(0, plot_rect.top() - 10, plot_rect.left() - 8, 20), Qt.AlignmentFlag.AlignRight, f"{max_deadtime:.2f} ms")
+        painter.drawText(QRectF(plot_rect.left() - 20, plot_rect.bottom() + 8, 60, 20), Qt.AlignmentFlag.AlignLeft, f"{min_voltage:.1f} V")
+        painter.drawText(QRectF(plot_rect.right() - 40, plot_rect.bottom() + 8, 60, 20), Qt.AlignmentFlag.AlignRight, f"{max_voltage:.1f} V")
+
+        points = [map_point(point) for point in self._curve]
+        painter.setPen(QPen(QColor("#0f766e"), 2))
+        for start, end in zip(points, points[1:]):
+            painter.drawLine(start, end)
+
+        painter.setBrush(QColor("#0f766e"))
+        for point in points:
+            painter.drawEllipse(point, 4, 4)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, controller: AppController) -> None:
         super().__init__()
@@ -54,6 +124,7 @@ class MainWindow(QMainWindow):
         self.resize(1240, 820)
         self._build_menu_bar()
         self._build_serial_log_window()
+        self._build_deadtime_window()
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -143,6 +214,32 @@ class MainWindow(QMainWindow):
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         layout.addWidget(self.log_text)
+
+    def _build_deadtime_window(self) -> None:
+        self.deadtime_window = QWidget(self, Qt.WindowType.Window)
+        self.deadtime_window.setWindowTitle("Deadtime Configuration")
+        self.deadtime_window.resize(860, 620)
+        layout = QVBoxLayout(self.deadtime_window)
+
+        self.deadtime_graph = DeadtimeGraphWidget(self.deadtime_window)
+        layout.addWidget(self.deadtime_graph)
+
+        self.deadtime_curve_table = QTableWidget(0, 2)
+        self.deadtime_curve_table.setHorizontalHeaderLabels(["Voltage", "Deadtime (ms)"])
+        self.deadtime_curve_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.deadtime_curve_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.deadtime_curve_table.itemChanged.connect(self._on_deadtime_curve_changed)
+        layout.addWidget(self.deadtime_curve_table)
+
+        curve_button_row = QHBoxLayout()
+        self.deadtime_add_row_button = QPushButton("Add Row")
+        self.deadtime_remove_row_button = QPushButton("Remove Selected Row")
+        self.deadtime_add_row_button.clicked.connect(self._handle_add_deadtime_curve_row)
+        self.deadtime_remove_row_button.clicked.connect(self._remove_selected_deadtime_curve_row)
+        curve_button_row.addWidget(self.deadtime_add_row_button)
+        curve_button_row.addWidget(self.deadtime_remove_row_button)
+        curve_button_row.addStretch(1)
+        layout.addLayout(curve_button_row)
 
     def _build_error_banner(self) -> QGroupBox:
         group = QGroupBox("Errors")
@@ -263,25 +360,16 @@ class MainWindow(QMainWindow):
         inputs_layout.addRow("Test Duration (s)", self.advanced_duration_spin)
         layout.addWidget(inputs_group)
 
-        curve_group = QGroupBox("Deadtime Curve")
-        curve_layout = QVBoxLayout(curve_group)
-        self.deadtime_curve_table = QTableWidget(0, 2)
-        self.deadtime_curve_table.setHorizontalHeaderLabels(["Voltage", "Deadtime (ms)"])
-        self.deadtime_curve_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.deadtime_curve_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.deadtime_curve_table.itemChanged.connect(self._on_deadtime_curve_changed)
-        curve_layout.addWidget(self.deadtime_curve_table)
-
-        curve_button_row = QHBoxLayout()
-        self.deadtime_add_row_button = QPushButton("Add Row")
-        self.deadtime_remove_row_button = QPushButton("Remove Selected Row")
-        self.deadtime_add_row_button.clicked.connect(self._handle_add_deadtime_curve_row)
-        self.deadtime_remove_row_button.clicked.connect(self._remove_selected_deadtime_curve_row)
-        curve_button_row.addWidget(self.deadtime_add_row_button)
-        curve_button_row.addWidget(self.deadtime_remove_row_button)
-        curve_button_row.addStretch(1)
-        curve_layout.addLayout(curve_button_row)
-        layout.addWidget(curve_group)
+        deadtime_group = QGroupBox("Deadtime Configuration")
+        deadtime_layout = QVBoxLayout(deadtime_group)
+        self.deadtime_window_button = QPushButton("Open Deadtime Configuration")
+        self.deadtime_window_button.clicked.connect(self._show_deadtime_window)
+        self.deadtime_curve_summary_label = QLabel()
+        self.deadtime_curve_summary_label.setWordWrap(True)
+        self.deadtime_curve_summary_label.setTextFormat(Qt.TextFormat.PlainText)
+        deadtime_layout.addWidget(self.deadtime_window_button)
+        deadtime_layout.addWidget(self.deadtime_curve_summary_label)
+        layout.addWidget(deadtime_group)
 
         outputs_group = QGroupBox("Computed Outputs")
         outputs_layout = QFormLayout(outputs_group)
@@ -476,6 +564,11 @@ class MainWindow(QMainWindow):
         self.serial_log_window.raise_()
         self.serial_log_window.activateWindow()
 
+    def _show_deadtime_window(self) -> None:
+        self.deadtime_window.show()
+        self.deadtime_window.raise_()
+        self.deadtime_window.activateWindow()
+
     def _validate_run_config(self) -> bool:
         if not self.rpm_spin.text().strip():
             self._controller.report_validation_error("RPM is required before sending commands")
@@ -504,6 +597,7 @@ class MainWindow(QMainWindow):
         for point in default_deadtime_curve():
             self._add_deadtime_curve_row(point.voltage, point.deadtime_ms)
         self._updating_deadtime_table = False
+        self._update_deadtime_curve_views()
 
     def _add_deadtime_curve_row(
         self,
@@ -523,6 +617,7 @@ class MainWindow(QMainWindow):
             QTableWidgetItem("" if deadtime_ms is None else f"{deadtime_ms:.3f}"),
         )
         if not self._updating_deadtime_table:
+            self._update_deadtime_curve_views()
             self._refresh_advanced_calculation()
 
     def _handle_add_deadtime_curve_row(self, *_args: object) -> None:
@@ -537,12 +632,29 @@ class MainWindow(QMainWindow):
             selected_rows = [self.deadtime_curve_table.rowCount() - 1]
         for row in selected_rows:
             self.deadtime_curve_table.removeRow(row)
+        self._update_deadtime_curve_views()
         self._refresh_advanced_calculation()
 
     def _on_deadtime_curve_changed(self, *_args: object) -> None:
         if self._updating_deadtime_table:
             return
+        self._update_deadtime_curve_views()
         self._refresh_advanced_calculation()
+
+    def _update_deadtime_curve_views(self) -> None:
+        curve, errors = self._read_deadtime_curve()
+        self.deadtime_graph.set_curve(curve)
+        if errors:
+            self.deadtime_curve_summary_label.setText("\n".join(errors))
+            return
+        if not curve:
+            self.deadtime_curve_summary_label.setText("No deadtime points configured.")
+            return
+        sorted_curve = sorted(curve, key=lambda point: point.voltage)
+        self.deadtime_curve_summary_label.setText(
+            f"{len(sorted_curve)} points loaded. "
+            f"Voltage range {sorted_curve[0].voltage:.2f} V to {sorted_curve[-1].voltage:.2f} V."
+        )
 
     def _sync_injector_size_from_lb_hr(self, *_args: object) -> None:
         if self._syncing_injector_size:
