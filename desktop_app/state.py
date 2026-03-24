@@ -79,7 +79,8 @@ class AppState:
     connection_verified: bool = False
     verification_message: str = "Connection not verified"
     test_mode: str = "sequential"
-    wizard_test_kind: Literal["simple", "advanced"] = "simple"
+    wizard_step: int = 0
+    selected_test_kind: Literal["simple", "advanced"] | None = None
     firmware_status: FirmwareStatus = field(default_factory=FirmwareStatus)
     test_progress: TestProgress = field(default_factory=TestProgress)
     auto_poll_enabled: bool = True
@@ -116,6 +117,14 @@ class AppState:
     @property
     def has_error(self) -> bool:
         return bool(self.last_error_message)
+
+    @property
+    def can_navigate_back(self) -> bool:
+        return not self.test_progress.active
+
+    @property
+    def wizard_test_kind(self) -> Literal["simple", "advanced"] | None:
+        return self.selected_test_kind
 
 
 class AppController(QObject):
@@ -167,6 +176,9 @@ class AppController(QObject):
     def _clear_error(self, status_message: str | None = None) -> None:
         new_status = self._state.status_message if status_message is None else status_message
         self._set_state(replace(self._state, status_message=new_status, last_error_message=""))
+
+    def _set_status_message(self, message: str) -> None:
+        self._set_state(replace(self._state, status_message=message))
 
     @staticmethod
     def _validate_rpm(rpm: float) -> str | None:
@@ -544,11 +556,48 @@ class AppController(QObject):
             )
         )
 
-    def set_wizard_test_kind(self, wizard_test_kind: Literal["simple", "advanced"]) -> None:
-        if wizard_test_kind not in {"simple", "advanced"}:
+    def set_wizard_test_kind(self, wizard_test_kind: Literal["simple", "advanced"] | None) -> None:
+        if wizard_test_kind is not None and wizard_test_kind not in {"simple", "advanced"}:
             self._set_error(f"Unsupported wizard test mode: {wizard_test_kind}")
             return
-        self._set_state(replace(self._state, wizard_test_kind=wizard_test_kind))
+        self._set_state(replace(self._state, selected_test_kind=wizard_test_kind))
+
+    def go_previous_step(self) -> None:
+        if self._state.test_progress.active:
+            self._set_status_message("Cannot go back while test is running")
+            return
+        if self._state.wizard_step <= 0:
+            self._set_status_message("Already on the first step")
+            return
+        self._set_state(
+            replace(
+                self._state,
+                wizard_step=self._state.wizard_step - 1,
+                status_message=f"Moved to step {self._state.wizard_step}",
+            )
+        )
+
+    def go_next_step(self) -> None:
+        if self._state.wizard_step >= 2:
+            self._set_status_message("Already on the last step")
+            return
+        if self._state.wizard_step == 0:
+            if not self._state.connected:
+                self._set_status_message("Connect to a controller before continuing")
+                return
+            if not self._state.connection_verified:
+                self._set_status_message("Verify the connection before continuing")
+                return
+        elif self._state.wizard_step == 1 and self._state.selected_test_kind is None:
+            self._set_status_message("Choose Simple or Advanced before continuing")
+            return
+        self._set_state(
+            replace(
+                self._state,
+                wizard_step=self._state.wizard_step + 1,
+                status_message=f"Moved to step {self._state.wizard_step + 2}",
+            )
+        )
 
     def set_model(self, model: int) -> None:
         self.send_command(model_command(model))

@@ -33,31 +33,41 @@ Default desktop behavior:
 
 - `Sequential` is the default test mode.
 - Auto-polling is enabled by default at `1.0 s`.
-- Auto-poll controls are shown in the `Actions` panel.
+- Auto-poll controls are available on the execution step.
 
-## UI Buttons
+## Wizard Flow
 
-Operator-facing button meanings:
+The desktop GUI now uses a 3-step wizard:
 
-- `Connect`: Open the selected serial port at the application baud rate and begin reading firmware responses.
-- `Disconnect`: Close the current serial port connection.
-- `Refresh Ports`: Re-scan available serial ports and update the port selector.
-- `Run Selected`: Apply the current model, RPM, duty, and pulse count to the checked channels, then run only those checked channels using the selected test mode.
-- `Test Mode`: Choose whether checked channels run together (`All`) or one at a time (`Sequential`).
-- `Auto-poll STATUS after test start`: Enable periodic status refresh while a test is active.
-- `Poll Interval`: Choose the auto-poll cadence from the `Actions` panel.
-- `Stop All`: Stop all four channels, ignoring which channel checkboxes are selected. This is the operator’s global stop action and is intentionally more visually prominent in the UI.
-- `Read Status`: Request live firmware status and refresh the summary and per-channel status table.
-- `Help`: Request the firmware help text and protocol summary.
+1. `Connection`: choose a serial port, connect, and verify communication with the controller.
+2. `Test Type`: select `Simple` or `Advanced`, then configure only the controls for the selected mode.
+3. `Execute`: start or cancel the test and monitor progress and channel state.
 
-Important operator differences:
+Connection requirements:
 
-- `Run Selected` is the only selected-channel action button. It uses the checkbox selection and always applies the current configuration before output activity starts.
-- `Stop All` ignores the checkbox selection and stops every output. It is the broad stop action for the whole bench and should be treated as the immediate all-channel stop.
-- The GUI now runs counted-pulse tests only.
-- In `All`, `Run Selected` applies config and runs all checked channels for the configured pulse count together.
-- In `Sequential`, the GUI automatically runs `CH1`, `CH2`, `CH3`, and `CH4` in the order selected by the checkboxes' channel numbers, skipping unchecked channels.
-- `Read Status` and `Help` are informational. They do not change injector output state.
+- Step 1 must be completed before advancing.
+- `Next` remains disabled until the controller is connected and connection verification succeeds.
+- Verification is required before the test setup pages can be used.
+
+Test configuration:
+
+- `Simple` reuses the basic counted-test inputs for model, RPM, duty, and pulse count.
+- `Advanced` reuses the calculated test setup with derived duty cycle and pulse count.
+- `Test Mode` still controls whether checked channels run together (`All`) or one at a time (`Sequential`).
+- Only the selected mode's configuration UI is rendered on step 2.
+
+Execution page:
+
+- `Start Test` applies the selected mode's settings to the checked channels and starts the run.
+- `Cancel` calls the global stop action and stops all channels immediately.
+- The status area below the buttons shows the progress label, progress bar, firmware summary, and per-channel status table.
+- Auto-poll controls are also available on this page while monitoring an active run.
+
+Navigation rules:
+
+- Back-navigation is blocked while `test_progress.active` is true.
+- The mode selector and wizard navigation controls are disabled during an active test.
+- Back-navigation is re-enabled automatically when the test is no longer active.
 
 ## Run
 

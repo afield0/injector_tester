@@ -236,8 +236,8 @@ class MainWindow(QMainWindow):
         self.wizard_page_label.setTextFormat(Qt.TextFormat.PlainText)
         self.wizard_back_button = QPushButton("Back")
         self.wizard_next_button = QPushButton("Next")
-        self.wizard_back_button.clicked.connect(self._show_previous_wizard_page)
-        self.wizard_next_button.clicked.connect(self._show_next_wizard_page)
+        self.wizard_back_button.clicked.connect(self._controller.go_previous_step)
+        self.wizard_next_button.clicked.connect(self._controller.go_next_step)
         nav_row.addWidget(self.wizard_page_label)
         nav_row.addStretch(1)
         nav_row.addWidget(self.wizard_back_button)
@@ -283,6 +283,7 @@ class MainWindow(QMainWindow):
         selector_row = QHBoxLayout()
         selector_row.addWidget(QLabel("Mode"))
         self.test_type_combo = QComboBox()
+        self.test_type_combo.addItem("Select a mode...", None)
         self.test_type_combo.addItem("Simple", "simple")
         self.test_type_combo.addItem("Advanced", "advanced")
         self.test_type_combo.currentIndexChanged.connect(self._sync_test_type_page)
@@ -290,10 +291,15 @@ class MainWindow(QMainWindow):
         layout.addLayout(selector_row)
 
         self.test_type_stack = QStackedWidget()
+        self.test_type_prompt = QLabel("Choose Simple or Advanced to configure the test.")
+        self.test_type_prompt.setWordWrap(True)
+        self.test_type_prompt.setTextFormat(Qt.TextFormat.PlainText)
+        self.test_type_stack.addWidget(self.test_type_prompt)
         self.test_type_stack.addWidget(self._build_basic_testing_tab())
         self.test_type_stack.addWidget(self._build_advanced_testing_tab())
         layout.addWidget(self.test_type_stack, stretch=2)
         layout.addWidget(self._build_channel_selection_panel(), stretch=1)
+        self._update_test_type_page_ui(None)
         return page
 
     def _build_basic_testing_tab(self) -> QWidget:
@@ -456,20 +462,20 @@ class MainWindow(QMainWindow):
         self.selected_action_mode_label.setWordWrap(True)
         self.selected_action_mode_label.setTextFormat(Qt.TextFormat.PlainText)
 
-        self.run_selected_button = QPushButton("Run Selected")
-        self.stop_all_button = QPushButton("Stop All")
-        self.stop_all_button.setStyleSheet(
+        self.start_test_button = QPushButton("Start Test")
+        self.cancel_test_button = QPushButton("Cancel")
+        self.cancel_test_button.setStyleSheet(
             "background-color: #b91c1c; color: white; font-weight: 700; min-height: 44px;"
         )
-        self.run_selected_button.setToolTip(
-            "Apply the current model, RPM, duty, and pulse count to the checked channels, then run them using the selected test mode."
+        self.start_test_button.setToolTip(
+            "Apply the current mode-specific configuration to the checked channels, then start the selected test."
         )
-        self.stop_all_button.setToolTip(
-            "Emergency stop for all four channels regardless of the checkbox selection."
+        self.cancel_test_button.setToolTip(
+            "Stop all channels immediately."
         )
 
-        self.run_selected_button.clicked.connect(self._run_selected)
-        self.stop_all_button.clicked.connect(self._controller.stop_all)
+        self.start_test_button.clicked.connect(self._run_selected)
+        self.cancel_test_button.clicked.connect(self._controller.stop_all)
 
         self.auto_poll_checkbox = QCheckBox("Auto-poll status")
         self.auto_poll_checkbox.setChecked(True)
@@ -491,8 +497,8 @@ class MainWindow(QMainWindow):
         poll_row.addWidget(self.poll_interval_combo, stretch=1)
 
         layout.addWidget(self.selected_action_mode_label, 0, 0, 1, 2)
-        layout.addWidget(self.run_selected_button, 1, 0)
-        layout.addWidget(self.stop_all_button, 1, 1)
+        layout.addWidget(self.start_test_button, 1, 0)
+        layout.addWidget(self.cancel_test_button, 1, 1)
         layout.addWidget(self.auto_poll_checkbox, 2, 0, 1, 2)
         layout.addLayout(poll_row, 3, 0, 1, 2)
 
@@ -584,26 +590,43 @@ class MainWindow(QMainWindow):
         self._controller.set_test_mode(str(self.test_mode_combo.currentData()))
 
     def _sync_test_type_page(self) -> None:
-        mode = str(self.test_type_combo.currentData())
-        self.test_type_stack.setCurrentIndex(0 if mode == "simple" else 1)
+        mode = self.test_type_combo.currentData()
+        self._update_test_type_page_ui(mode)
         self._controller.set_wizard_test_kind(mode)
 
-    def _show_previous_wizard_page(self) -> None:
-        index = self.wizard_stack.currentIndex()
-        if index <= 0:
+    def _update_test_type_page_ui(self, mode: str | None) -> None:
+        if mode == "simple":
+            self.test_type_stack.setCurrentIndex(1)
+            if hasattr(self, "start_test_button"):
+                self.start_test_button.setText("Start Test")
+                self.start_test_button.setToolTip(
+                    "Apply the simple test model, RPM, duty, and pulse count to the checked channels, then run them using the selected test mode."
+                )
             return
-        self.wizard_stack.setCurrentIndex(index - 1)
-        self._update_wizard_navigation()
+        if mode == "advanced":
+            self.test_type_stack.setCurrentIndex(2)
+            if hasattr(self, "start_test_button"):
+                self.start_test_button.setText("Start Test")
+                self.start_test_button.setToolTip(
+                    "Apply the advanced calculated RPM, duty, and pulse count to the checked channels, then run them using the selected test mode."
+                )
+            return
+        self.test_type_stack.setCurrentIndex(0)
+        if hasattr(self, "start_test_button"):
+            self.start_test_button.setText("Start Test")
+            self.start_test_button.setToolTip(
+                "Choose Simple or Advanced on step 2 before starting the selected channels."
+            )
+
+    def _show_previous_wizard_page(self) -> None:
+        self._controller.go_previous_step()
 
     def _show_next_wizard_page(self) -> None:
-        index = self.wizard_stack.currentIndex()
-        if index >= self.wizard_stack.count() - 1:
-            return
-        self.wizard_stack.setCurrentIndex(index + 1)
-        self._update_wizard_navigation()
+        self._controller.go_next_step()
 
     def _update_wizard_navigation(self) -> None:
-        index = self.wizard_stack.currentIndex()
+        state = self._controller.state
+        index = state.wizard_step
         total = self.wizard_stack.count()
         self.wizard_page_label.setText(
             f"Step {index + 1} of {total}: "
@@ -615,15 +638,18 @@ class MainWindow(QMainWindow):
                 else "Execute"
             )
         )
-        self.wizard_back_button.setEnabled(index > 0)
+        test_active = state.test_progress.active
+        self.wizard_back_button.setEnabled((index > 0) and state.can_navigate_back)
         can_advance = index < total - 1
         if index == 0:
             can_advance = (
                 can_advance
-                and self._controller.state.connected
-                and self._controller.state.connection_verified
+                and state.connected
+                and state.connection_verified
             )
-        self.wizard_next_button.setEnabled(can_advance)
+        elif index == 1:
+            can_advance = can_advance and (state.selected_test_kind is not None)
+        self.wizard_next_button.setEnabled(can_advance and (not test_active))
 
     def _sync_auto_poll_enabled(self, checked: bool) -> None:
         self._controller.set_auto_poll_enabled(checked)
@@ -667,6 +693,11 @@ class MainWindow(QMainWindow):
 
     def _validate_run_config(self) -> bool:
         wizard_test_kind = self._controller.state.wizard_test_kind
+        if wizard_test_kind is None:
+            self._controller.report_validation_error(
+                "Choose Simple or Advanced on step 2 before starting a test."
+            )
+            return False
         if wizard_test_kind == "advanced":
             self._refresh_advanced_calculation()
             result = self._latest_advanced_result
@@ -959,6 +990,10 @@ class MainWindow(QMainWindow):
 
     def render(self, state: AppState) -> None:
         self.statusBar().showMessage(state.status_message)
+        if self.wizard_stack.currentIndex() != state.wizard_step:
+            self.wizard_stack.blockSignals(True)
+            self.wizard_stack.setCurrentIndex(state.wizard_step)
+            self.wizard_stack.blockSignals(False)
         if state.connection_port:
             self._selected_port = state.connection_port
         selected_port_index = self.port_combo.findData(self._selected_port)
@@ -1008,12 +1043,16 @@ class MainWindow(QMainWindow):
             self.test_mode_combo.setCurrentIndex(test_mode_index)
             self.test_mode_combo.blockSignals(False)
 
-        test_kind_index = self.test_type_combo.findData(state.wizard_test_kind)
+        test_kind_index = self.test_type_combo.findData(state.selected_test_kind)
         if test_kind_index >= 0 and self.test_type_combo.currentIndex() != test_kind_index:
             self.test_type_combo.blockSignals(True)
             self.test_type_combo.setCurrentIndex(test_kind_index)
             self.test_type_combo.blockSignals(False)
-        self.test_type_stack.setCurrentIndex(0 if state.wizard_test_kind == "simple" else 1)
+        elif test_kind_index < 0 and self.test_type_combo.currentIndex() != 0:
+            self.test_type_combo.blockSignals(True)
+            self.test_type_combo.setCurrentIndex(0)
+            self.test_type_combo.blockSignals(False)
+        self._update_test_type_page_ui(state.selected_test_kind)
 
         self.progress_label.setText(state.test_progress.label)
         self.progress_bar.setRange(state.test_progress.minimum, state.test_progress.maximum)
@@ -1023,7 +1062,14 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(0)
 
         any_selected = bool(state.selected_mask)
-        self.run_selected_button.setEnabled(any_selected)
+        test_active = state.test_progress.active
+        self.start_test_button.setEnabled(
+            any_selected and (state.selected_test_kind is not None) and (not test_active)
+        )
+        self.cancel_test_button.setEnabled(test_active)
+        self.wizard_back_button.setEnabled((state.wizard_step > 0) and state.can_navigate_back)
+        self.wizard_next_button.setEnabled(self.wizard_next_button.isEnabled() and (not test_active))
+        self.test_type_combo.setEnabled(not test_active)
 
         for index, channel in enumerate(state.channels):
             selected = bool(state.selected_mask & (1 << index))
