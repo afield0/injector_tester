@@ -18,12 +18,23 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from .advanced_testing import (
+    ADVANCED_TEST_MODEL,
+    AdvancedTestInputs,
+    DeadtimePoint,
+    AdvancedCalculationResult,
+    calculate_advanced_test,
+    cc_per_min_from_lb_per_hour,
+    default_deadtime_curve,
+    lb_per_hour_from_cc_per_min,
+)
 from .state import AppController, AppState
 
 
@@ -31,6 +42,9 @@ class MainWindow(QMainWindow):
     def __init__(self, controller: AppController) -> None:
         super().__init__()
         self._controller = controller
+        self._syncing_injector_size = False
+        self._updating_deadtime_table = False
+        self._latest_advanced_result: AdvancedCalculationResult | None = None
         self.setWindowTitle("Injector Tester")
         self.resize(1240, 820)
 
@@ -48,6 +62,7 @@ class MainWindow(QMainWindow):
         controller.state_changed.connect(self.render)
         self._refresh_ports()
         self.render(controller.state)
+        self._refresh_advanced_calculation()
 
     def _build_safety_banner(self) -> QGroupBox:
         group = QGroupBox("Injector Driver Safety")
@@ -103,13 +118,19 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._build_run_config_panel(), stretch=3)
+        layout.addWidget(self._build_testing_panel(), stretch=3)
         layout.addWidget(self._build_channel_selection_panel(), stretch=2)
         return container
 
-    def _build_run_config_panel(self) -> QGroupBox:
-        group = QGroupBox("Run Configuration")
-        layout = QFormLayout(group)
+    def _build_testing_panel(self) -> QTabWidget:
+        tabs = QTabWidget()
+        tabs.addTab(self._build_basic_testing_tab(), "Basic Testing")
+        tabs.addTab(self._build_advanced_testing_tab(), "Advanced Testing")
+        return tabs
+
+    def _build_basic_testing_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QFormLayout(page)
 
         self.model_combo = QComboBox()
         self.model_combo.addItem("0 - 4-stroke", 0)
@@ -152,7 +173,117 @@ class MainWindow(QMainWindow):
         layout.addRow("Duty %", self.duty_spin)
         layout.addRow("Test Mode", self.test_mode_combo)
         layout.addRow("Pulse Count", self.pulses_spin)
-        return group
+        return page
+
+    def _build_advanced_testing_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        inputs_group = QGroupBox("Calculated Test Setup")
+        inputs_layout = QFormLayout(inputs_group)
+
+        self.advanced_battery_voltage_spin = QDoubleSpinBox()
+        self.advanced_battery_voltage_spin.setRange(0.0, 32.0)
+        self.advanced_battery_voltage_spin.setDecimals(2)
+        self.advanced_battery_voltage_spin.setSingleStep(0.1)
+        self.advanced_battery_voltage_spin.setValue(13.8)
+        self.advanced_battery_voltage_spin.valueChanged.connect(self._refresh_advanced_calculation)
+
+        self.advanced_fuel_amount_spin = QDoubleSpinBox()
+        self.advanced_fuel_amount_spin.setRange(0.0, 500.0)
+        self.advanced_fuel_amount_spin.setDecimals(3)
+        self.advanced_fuel_amount_spin.setSingleStep(0.1)
+        self.advanced_fuel_amount_spin.setValue(5.0)
+        self.advanced_fuel_amount_spin.valueChanged.connect(self._refresh_advanced_calculation)
+
+        self.advanced_injector_lb_hr_spin = QDoubleSpinBox()
+        self.advanced_injector_lb_hr_spin.setRange(0.0, 1000.0)
+        self.advanced_injector_lb_hr_spin.setDecimals(2)
+        self.advanced_injector_lb_hr_spin.setSingleStep(0.5)
+        self.advanced_injector_lb_hr_spin.setValue(32.0)
+        self.advanced_injector_lb_hr_spin.valueChanged.connect(self._sync_injector_size_from_lb_hr)
+
+        self.advanced_injector_cc_min_spin = QDoubleSpinBox()
+        self.advanced_injector_cc_min_spin.setRange(0.0, 10000.0)
+        self.advanced_injector_cc_min_spin.setDecimals(2)
+        self.advanced_injector_cc_min_spin.setSingleStep(1.0)
+        self.advanced_injector_cc_min_spin.setValue(
+            cc_per_min_from_lb_per_hour(self.advanced_injector_lb_hr_spin.value())
+        )
+        self.advanced_injector_cc_min_spin.valueChanged.connect(self._sync_injector_size_from_cc_min)
+
+        self.advanced_rpm_spin = QDoubleSpinBox()
+        self.advanced_rpm_spin.setRange(1.0, 50000.0)
+        self.advanced_rpm_spin.setDecimals(1)
+        self.advanced_rpm_spin.setValue(1000.0)
+        self.advanced_rpm_spin.valueChanged.connect(self._refresh_advanced_calculation)
+
+        self.advanced_duration_spin = QDoubleSpinBox()
+        self.advanced_duration_spin.setRange(0.1, 3600.0)
+        self.advanced_duration_spin.setDecimals(1)
+        self.advanced_duration_spin.setSingleStep(0.5)
+        self.advanced_duration_spin.setValue(30.0)
+        self.advanced_duration_spin.valueChanged.connect(self._refresh_advanced_calculation)
+
+        inputs_layout.addRow("Battery Voltage", self.advanced_battery_voltage_spin)
+        inputs_layout.addRow("Fuel Amount / Injector (mL)", self.advanced_fuel_amount_spin)
+        inputs_layout.addRow("Injector Size (lb/hr)", self.advanced_injector_lb_hr_spin)
+        inputs_layout.addRow("Injector Size (cc/min)", self.advanced_injector_cc_min_spin)
+        inputs_layout.addRow("RPM", self.advanced_rpm_spin)
+        inputs_layout.addRow("Test Duration (s)", self.advanced_duration_spin)
+        layout.addWidget(inputs_group)
+
+        curve_group = QGroupBox("Deadtime Curve")
+        curve_layout = QVBoxLayout(curve_group)
+        self.deadtime_curve_table = QTableWidget(0, 2)
+        self.deadtime_curve_table.setHorizontalHeaderLabels(["Voltage", "Deadtime (ms)"])
+        self.deadtime_curve_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.deadtime_curve_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.deadtime_curve_table.itemChanged.connect(self._on_deadtime_curve_changed)
+        curve_layout.addWidget(self.deadtime_curve_table)
+
+        curve_button_row = QHBoxLayout()
+        self.deadtime_add_row_button = QPushButton("Add Row")
+        self.deadtime_remove_row_button = QPushButton("Remove Selected Row")
+        self.deadtime_add_row_button.clicked.connect(self._handle_add_deadtime_curve_row)
+        self.deadtime_remove_row_button.clicked.connect(self._remove_selected_deadtime_curve_row)
+        curve_button_row.addWidget(self.deadtime_add_row_button)
+        curve_button_row.addWidget(self.deadtime_remove_row_button)
+        curve_button_row.addStretch(1)
+        curve_layout.addLayout(curve_button_row)
+        layout.addWidget(curve_group)
+
+        outputs_group = QGroupBox("Computed Outputs")
+        outputs_layout = QFormLayout(outputs_group)
+        self.advanced_model_value_label = QLabel("0 - 4-stroke")
+        self.advanced_deadtime_value_label = QLabel("0.000 ms")
+        self.advanced_pulse_count_value_label = QLabel("0")
+        self.advanced_effective_open_time_value_label = QLabel("0.000 ms")
+        self.advanced_commanded_pw_value_label = QLabel("0.000 ms")
+        self.advanced_duty_cycle_value_label = QLabel("0.00 %")
+        self.advanced_validation_label = QLabel()
+        self.advanced_validation_label.setWordWrap(True)
+        self.advanced_validation_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.advanced_validation_label.setStyleSheet(
+            "background-color: #f8fafc; border: 1px solid #cbd5e1; padding: 8px;"
+        )
+
+        outputs_layout.addRow("Derived Model", self.advanced_model_value_label)
+        outputs_layout.addRow("Interpolated Deadtime", self.advanced_deadtime_value_label)
+        outputs_layout.addRow("Pulse Count", self.advanced_pulse_count_value_label)
+        outputs_layout.addRow("Effective Open / Pulse", self.advanced_effective_open_time_value_label)
+        outputs_layout.addRow("Commanded Pulse Width", self.advanced_commanded_pw_value_label)
+        outputs_layout.addRow("Duty Cycle", self.advanced_duty_cycle_value_label)
+        outputs_layout.addRow("Validation / Warnings", self.advanced_validation_label)
+        layout.addWidget(outputs_group)
+
+        self.apply_advanced_button = QPushButton("Apply Advanced Calculation")
+        self.apply_advanced_button.clicked.connect(self._apply_advanced_calculation)
+        layout.addWidget(self.apply_advanced_button)
+
+        layout.addStretch(1)
+        self._populate_default_deadtime_curve()
+        return page
 
     def _build_channel_selection_panel(self) -> QGroupBox:
         group = QGroupBox("Channel Selection")
@@ -318,6 +449,180 @@ class MainWindow(QMainWindow):
             self.duty_spin.value(),
             self.pulses_spin.value(),
         )
+
+    def _populate_default_deadtime_curve(self) -> None:
+        self._updating_deadtime_table = True
+        self.deadtime_curve_table.setRowCount(0)
+        for point in default_deadtime_curve():
+            self._add_deadtime_curve_row(point.voltage, point.deadtime_ms)
+        self._updating_deadtime_table = False
+
+    def _add_deadtime_curve_row(
+        self,
+        voltage: float | None = None,
+        deadtime_ms: float | None = None,
+    ) -> None:
+        row = self.deadtime_curve_table.rowCount()
+        self.deadtime_curve_table.insertRow(row)
+        self.deadtime_curve_table.setItem(
+            row,
+            0,
+            QTableWidgetItem("" if voltage is None else f"{voltage:.2f}"),
+        )
+        self.deadtime_curve_table.setItem(
+            row,
+            1,
+            QTableWidgetItem("" if deadtime_ms is None else f"{deadtime_ms:.3f}"),
+        )
+        if not self._updating_deadtime_table:
+            self._refresh_advanced_calculation()
+
+    def _handle_add_deadtime_curve_row(self, *_args: object) -> None:
+        self._add_deadtime_curve_row()
+
+    def _remove_selected_deadtime_curve_row(self) -> None:
+        selected_rows = sorted(
+            {index.row() for index in self.deadtime_curve_table.selectionModel().selectedRows()},
+            reverse=True,
+        )
+        if not selected_rows and self.deadtime_curve_table.rowCount() > 0:
+            selected_rows = [self.deadtime_curve_table.rowCount() - 1]
+        for row in selected_rows:
+            self.deadtime_curve_table.removeRow(row)
+        self._refresh_advanced_calculation()
+
+    def _on_deadtime_curve_changed(self, *_args: object) -> None:
+        if self._updating_deadtime_table:
+            return
+        self._refresh_advanced_calculation()
+
+    def _sync_injector_size_from_lb_hr(self, *_args: object) -> None:
+        if self._syncing_injector_size:
+            return
+        # Guard against recursive updates while keeping both units editable.
+        self._syncing_injector_size = True
+        self.advanced_injector_cc_min_spin.setValue(
+            cc_per_min_from_lb_per_hour(self.advanced_injector_lb_hr_spin.value())
+        )
+        self._syncing_injector_size = False
+        self._refresh_advanced_calculation()
+
+    def _sync_injector_size_from_cc_min(self, *_args: object) -> None:
+        if self._syncing_injector_size:
+            return
+        self._syncing_injector_size = True
+        self.advanced_injector_lb_hr_spin.setValue(
+            lb_per_hour_from_cc_per_min(self.advanced_injector_cc_min_spin.value())
+        )
+        self._syncing_injector_size = False
+        self._refresh_advanced_calculation()
+
+    def _read_deadtime_curve(self) -> tuple[tuple[DeadtimePoint, ...], tuple[str, ...]]:
+        curve: list[DeadtimePoint] = []
+        errors: list[str] = []
+        for row in range(self.deadtime_curve_table.rowCount()):
+            voltage_item = self.deadtime_curve_table.item(row, 0)
+            deadtime_item = self.deadtime_curve_table.item(row, 1)
+            voltage_text = "" if voltage_item is None else voltage_item.text().strip()
+            deadtime_text = "" if deadtime_item is None else deadtime_item.text().strip()
+            if not voltage_text and not deadtime_text:
+                continue
+            if not voltage_text or not deadtime_text:
+                errors.append(f"Deadtime curve row {row + 1} requires both voltage and deadtime.")
+                continue
+            try:
+                voltage = float(voltage_text)
+                deadtime_ms = float(deadtime_text)
+            except ValueError:
+                errors.append(f"Deadtime curve row {row + 1} must contain numeric values.")
+                continue
+            curve.append(DeadtimePoint(voltage=voltage, deadtime_ms=deadtime_ms))
+        return tuple(curve), tuple(errors)
+
+    def _refresh_advanced_calculation(self, *_args: object) -> None:
+        curve, table_errors = self._read_deadtime_curve()
+        result = calculate_advanced_test(
+            AdvancedTestInputs(
+                battery_voltage=self.advanced_battery_voltage_spin.value(),
+                desired_fuel_ml=self.advanced_fuel_amount_spin.value(),
+                injector_size_cc_per_min=self.advanced_injector_cc_min_spin.value(),
+                rpm=self.advanced_rpm_spin.value(),
+                duration_seconds=self.advanced_duration_spin.value(),
+                deadtime_curve=curve,
+            )
+        )
+
+        if table_errors:
+            result = AdvancedCalculationResult(
+                model=result.model,
+                input_voltage=result.input_voltage,
+                applied_voltage=result.applied_voltage,
+                voltage_was_clamped=result.voltage_was_clamped,
+                raw_pulse_count=result.raw_pulse_count,
+                pulse_count=result.pulse_count,
+                cycle_time_ms=result.cycle_time_ms,
+                interpolated_deadtime_ms=result.interpolated_deadtime_ms,
+                effective_open_time_ms=result.effective_open_time_ms,
+                commanded_pulse_width_ms=result.commanded_pulse_width_ms,
+                duty_cycle_percent=result.duty_cycle_percent,
+                warnings=result.warnings,
+                errors=(*table_errors, *result.errors),
+            )
+
+        self._latest_advanced_result = result
+        self.advanced_model_value_label.setText("0 - 4-stroke")
+        self.advanced_deadtime_value_label.setText(
+            f"{result.interpolated_deadtime_ms:.3f} ms @ {result.applied_voltage:.2f} V"
+        )
+        self.advanced_pulse_count_value_label.setText(
+            f"{result.pulse_count} ({result.raw_pulse_count:.3f} exact)"
+        )
+        self.advanced_effective_open_time_value_label.setText(
+            f"{result.effective_open_time_ms:.3f} ms"
+        )
+        self.advanced_commanded_pw_value_label.setText(
+            f"{result.commanded_pulse_width_ms:.3f} ms"
+        )
+        self.advanced_duty_cycle_value_label.setText(f"{result.duty_cycle_percent:.2f} %")
+        self.apply_advanced_button.setEnabled(result.is_valid)
+        self._render_advanced_messages(result)
+
+    def _render_advanced_messages(self, result: AdvancedCalculationResult) -> None:
+        messages: list[str] = []
+        if result.errors:
+            messages.extend(f"Block: {message}" for message in result.errors)
+        if result.warnings:
+            messages.extend(f"Warn: {message}" for message in result.warnings)
+        if not messages:
+            messages.append("Ready to apply. Advanced mode derives a 4-stroke test model.")
+        self.advanced_validation_label.setText("\n".join(messages))
+        if result.errors:
+            self.advanced_validation_label.setStyleSheet(
+                "background-color: #fff1f0; color: #9f1239; border: 2px solid #dc2626; padding: 8px;"
+            )
+            return
+        if result.warnings:
+            self.advanced_validation_label.setStyleSheet(
+                "background-color: #fffbeb; color: #92400e; border: 2px solid #f59e0b; padding: 8px;"
+            )
+            return
+        self.advanced_validation_label.setStyleSheet(
+            "background-color: #ecfdf5; color: #166534; border: 2px solid #22c55e; padding: 8px;"
+        )
+
+    def _apply_advanced_calculation(self) -> None:
+        self._refresh_advanced_calculation()
+        result = self._latest_advanced_result
+        if result is None or not result.is_valid:
+            return
+
+        # Advanced mode always targets the existing 4-stroke firmware model.
+        model_index = self.model_combo.findData(ADVANCED_TEST_MODEL)
+        if model_index >= 0:
+            self.model_combo.setCurrentIndex(model_index)
+        self.rpm_spin.setValue(self.advanced_rpm_spin.value())
+        self.duty_spin.setValue(result.duty_cycle_percent)
+        self.pulses_spin.setValue(result.pulse_count)
 
     def _sync_selected_channels(self) -> None:
         channels = [index + 1 for index, checkbox in enumerate(self.channel_checks) if checkbox.isChecked()]
