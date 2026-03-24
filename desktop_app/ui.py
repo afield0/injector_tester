@@ -21,8 +21,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QSpinBox,
-    QSplitter,
-    QTabWidget,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -142,10 +141,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-
-        layout.addWidget(self._build_top_panels())
-        layout.addWidget(self._build_action_panel())
-        layout.addWidget(self._build_status_and_log_splitter(), stretch=1)
+        layout.addWidget(self._build_wizard_flow(), stretch=1)
 
         controller.state_changed.connect(self.render)
         self._refresh_ports()
@@ -223,21 +219,34 @@ class MainWindow(QMainWindow):
         self.error_log_text.setReadOnly(True)
         layout.addWidget(self.error_log_text)
 
-    def _build_top_panels(self) -> QWidget:
+    def _build_wizard_flow(self) -> QWidget:
         container = QWidget()
-        layout = QHBoxLayout(container)
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._build_testing_panel(), stretch=3)
-        layout.addWidget(self._build_channel_selection_panel(), stretch=2)
+
+        self.wizard_stack = QStackedWidget()
+        self.wizard_stack.addWidget(self._build_connection_page())
+        self.wizard_stack.addWidget(self._build_test_type_page())
+        self.wizard_stack.addWidget(self._build_execute_page())
+        self.wizard_stack.currentChanged.connect(lambda *_args: self._update_wizard_navigation())
+        layout.addWidget(self.wizard_stack, stretch=1)
+
+        nav_row = QHBoxLayout()
+        self.wizard_page_label = QLabel()
+        self.wizard_page_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.wizard_back_button = QPushButton("Back")
+        self.wizard_next_button = QPushButton("Next")
+        self.wizard_back_button.clicked.connect(self._show_previous_wizard_page)
+        self.wizard_next_button.clicked.connect(self._show_next_wizard_page)
+        nav_row.addWidget(self.wizard_page_label)
+        nav_row.addStretch(1)
+        nav_row.addWidget(self.wizard_back_button)
+        nav_row.addWidget(self.wizard_next_button)
+        layout.addLayout(nav_row)
+        self._update_wizard_navigation()
         return container
 
-    def _build_testing_panel(self) -> QTabWidget:
-        tabs = QTabWidget()
-        tabs.addTab(self._build_basic_testing_tab(), "Basic Testing")
-        tabs.addTab(self._build_advanced_testing_tab(), "Advanced Testing")
-        return tabs
-
-    def _build_basic_testing_tab(self) -> QWidget:
+    def _build_connection_page(self) -> QWidget:
         page = QWidget()
         layout = QFormLayout(page)
 
@@ -259,6 +268,34 @@ class MainWindow(QMainWindow):
         connect_row.addWidget(self.connect_button)
         connect_row.addWidget(self.disconnect_button)
         connect_row.addWidget(self.verify_status_button)
+
+        layout.addRow("Port", port_row)
+        layout.addRow("Connection", connect_row)
+        layout.addRow(QLabel("Use Next to continue after verifying controller status."))
+        return page
+
+    def _build_test_type_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("Test Type"))
+        self.test_type_combo = QComboBox()
+        self.test_type_combo.addItem("Simple", 0)
+        self.test_type_combo.addItem("Advanced", 1)
+        self.test_type_combo.currentIndexChanged.connect(self._sync_test_type_page)
+        selector_row.addWidget(self.test_type_combo, stretch=1)
+        layout.addLayout(selector_row)
+
+        self.test_type_stack = QStackedWidget()
+        self.test_type_stack.addWidget(self._build_simple_test_inputs())
+        self.test_type_stack.addWidget(self._build_advanced_testing_tab())
+        layout.addWidget(self.test_type_stack, stretch=2)
+        layout.addWidget(self._build_channel_selection_panel(), stretch=1)
+        return page
+
+    def _build_simple_test_inputs(self) -> QWidget:
+        page = QWidget()
+        layout = QFormLayout(page)
 
         self.model_combo = QComboBox()
         self.model_combo.addItem("0 - 4-stroke", 0)
@@ -284,8 +321,6 @@ class MainWindow(QMainWindow):
         self.pulses_spin.setRange(1, 2_000_000_000)
         self.pulses_spin.setValue(100)
 
-        layout.addRow("Port", port_row)
-        layout.addRow("Connection", connect_row)
         layout.addRow("Model", self.model_combo)
         layout.addRow("RPM", self.rpm_spin)
         layout.addRow("Duty %", self.duty_spin)
@@ -460,11 +495,12 @@ class MainWindow(QMainWindow):
 
         return group
 
-    def _build_status_and_log_splitter(self) -> QSplitter:
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(self._build_status_table_group())
-        splitter.setStretchFactor(0, 1)
-        return splitter
+    def _build_execute_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._build_action_panel())
+        layout.addWidget(self._build_status_table_group(), stretch=1)
+        return page
 
     def _build_status_table_group(self) -> QGroupBox:
         group = QGroupBox("Channel Status")
@@ -543,6 +579,39 @@ class MainWindow(QMainWindow):
 
     def _sync_test_mode(self) -> None:
         self._controller.set_test_mode(str(self.test_mode_combo.currentData()))
+
+    def _sync_test_type_page(self) -> None:
+        self.test_type_stack.setCurrentIndex(self.test_type_combo.currentIndex())
+
+    def _show_previous_wizard_page(self) -> None:
+        index = self.wizard_stack.currentIndex()
+        if index <= 0:
+            return
+        self.wizard_stack.setCurrentIndex(index - 1)
+        self._update_wizard_navigation()
+
+    def _show_next_wizard_page(self) -> None:
+        index = self.wizard_stack.currentIndex()
+        if index >= self.wizard_stack.count() - 1:
+            return
+        self.wizard_stack.setCurrentIndex(index + 1)
+        self._update_wizard_navigation()
+
+    def _update_wizard_navigation(self) -> None:
+        index = self.wizard_stack.currentIndex()
+        total = self.wizard_stack.count()
+        self.wizard_page_label.setText(
+            f"Step {index + 1} of {total}: "
+            + (
+                "Connection"
+                if index == 0
+                else "Test Type"
+                if index == 1
+                else "Execute"
+            )
+        )
+        self.wizard_back_button.setEnabled(index > 0)
+        self.wizard_next_button.setEnabled(index < total - 1)
 
     def _sync_auto_poll_enabled(self, checked: bool) -> None:
         self._controller.set_auto_poll_enabled(checked)
