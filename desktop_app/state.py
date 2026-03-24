@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from .protocol import (
     CHANNEL_MASK_ALL,
@@ -53,6 +53,16 @@ class FirmwareStatus:
 
 
 @dataclass(frozen=True)
+class TestProgress:
+    active: bool = False
+    mode: str = "idle"
+    value: int = 0
+    minimum: int = 0
+    maximum: int = 100
+    label: str = "Idle"
+
+
+@dataclass(frozen=True)
 class AppState:
     safety_warning: str = (
         "Safety warning: do not connect injectors directly to Arduino pins. "
@@ -67,6 +77,9 @@ class AppState:
     connection_port: str | None = None
     connected: bool = False
     firmware_status: FirmwareStatus = field(default_factory=FirmwareStatus)
+    test_progress: TestProgress = field(default_factory=TestProgress)
+    auto_poll_enabled: bool = False
+    auto_poll_interval_ms: int = 500
     selected_mask: int = 1
     status_message: str = "Disconnected"
     last_error_message: str = ""
@@ -109,6 +122,11 @@ class AppController(QObject):
         super().__init__()
         self._transport = transport
         self._state = AppState()
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self.refresh_status)
+        self._tracked_test_mask = 0
+        self._tracked_total_pulses = 0
+        self._tracked_mode = "idle"
 
         transport.connection_changed.connect(self._on_connection_changed)
         transport.raw_line_received.connect(self._on_raw_line)
@@ -157,6 +175,48 @@ class AppController(QObject):
             return "Pulse count must be a positive integer"
         return None
 
+    def _update_poll_timer(self) -> None:
+        if self._state.auto_poll_enabled and self._state.test_progress.active:
+            self._poll_timer.start(self._state.auto_poll_interval_ms)
+            return
+        self._poll_timer.stop()
+
+    def _set_test_progress(self, progress: TestProgress) -> None:
+        self._set_state(replace(self._state, test_progress=progress))
+        self._update_poll_timer()
+
+    def _begin_test_tracking(self, mode: str, pulses: int = 0) -> None:
+        self._tracked_test_mask = self._state.selected_mask
+        self._tracked_total_pulses = pulses
+        self._tracked_mode = mode
+
+        if mode == "counted":
+            progress = TestProgress(
+                active=True,
+                mode=mode,
+                value=0,
+                minimum=0,
+                maximum=100,
+                label=f"Counted run in progress: 0% ({pulses} pulses/channel)",
+            )
+        else:
+            progress = TestProgress(
+                active=True,
+                mode=mode,
+                value=0,
+                minimum=0,
+                maximum=0,
+                label="Continuous run active",
+            )
+
+        self._set_test_progress(progress)
+
+    def _clear_test_tracking(self, label: str = "Idle") -> None:
+        self._tracked_test_mask = 0
+        self._tracked_total_pulses = 0
+        self._tracked_mode = "idle"
+        self._set_test_progress(TestProgress(label=label))
+
     @Slot(bool, str, str)
     def _on_connection_changed(self, connected: bool, port: str, backend: str) -> None:
         if connected:
@@ -173,6 +233,7 @@ class AppController(QObject):
             self.refresh_status()
             return
 
+        self._clear_test_tracking()
         self._set_state(
             replace(
                 self._state,
@@ -222,15 +283,62 @@ class AppController(QObject):
             state_mask=response.state_mask,
         )
         channels = tuple(self._channel_from_status(channel) for channel in response.channels)
+        progress = self._derive_test_progress(channels)
         self._set_state(
             replace(
                 self._state,
                 firmware_status=firmware_status,
+                test_progress=progress,
                 channels=channels,
                 status_message="Status updated",
                 last_error_message="",
             )
         )
+        self._update_poll_timer()
+
+    def _derive_test_progress(self, channels: tuple[ChannelConfig, ...]) -> TestProgress:
+        if self._tracked_test_mask == 0 or self._tracked_mode == "idle":
+            return self._state.test_progress
+
+        tracked = [channel for channel in channels if self._tracked_test_mask & channel_to_mask(channel.channel)]
+        if not tracked:
+            return self._state.test_progress
+
+        any_enabled = any(channel.enabled for channel in tracked)
+
+        if self._tracked_mode == "counted" and self._tracked_total_pulses > 0:
+            remaining = sum(channel.pulses_left for channel in tracked)
+            total = self._tracked_total_pulses * len(tracked)
+            completed = max(0, total - remaining)
+            percent = int((completed * 100) / total) if total > 0 else 0
+            if not any_enabled and remaining == 0:
+                self._tracked_test_mask = 0
+                self._tracked_total_pulses = 0
+                self._tracked_mode = "idle"
+                return TestProgress(value=100, label="Counted run complete")
+            return TestProgress(
+                active=True,
+                mode="counted",
+                value=max(0, min(100, percent)),
+                minimum=0,
+                maximum=100,
+                label=f"Counted run in progress: {percent}%",
+            )
+
+        if any_enabled:
+            return TestProgress(
+                active=True,
+                mode="continuous",
+                value=0,
+                minimum=0,
+                maximum=0,
+                label="Continuous run active",
+            )
+
+        self._tracked_test_mask = 0
+        self._tracked_total_pulses = 0
+        self._tracked_mode = "idle"
+        return TestProgress(label="Idle")
 
     @staticmethod
     def _channel_from_status(status: ChannelStatus) -> ChannelConfig:
@@ -284,6 +392,14 @@ class AppController(QObject):
     def report_validation_error(self, message: str) -> None:
         self._set_error(message)
 
+    def set_auto_poll_enabled(self, enabled: bool) -> None:
+        self._set_state(replace(self._state, auto_poll_enabled=enabled))
+        self._update_poll_timer()
+
+    def set_auto_poll_interval_ms(self, interval_ms: int) -> None:
+        self._set_state(replace(self._state, auto_poll_interval_ms=interval_ms))
+        self._update_poll_timer()
+
     def apply_channel_settings(self, rpm: float, duty: float) -> None:
         rpm_error = self._validate_rpm(rpm)
         if rpm_error is not None:
@@ -303,6 +419,7 @@ class AppController(QObject):
         self._append_log(
             "Selected-action compatibility fallback: expanding Start Selected into per-channel START commands."
         )
+        self._begin_test_tracking("continuous")
         for channel in self._state.selected_channels:
             self.send_command(start_command(channel))
 
@@ -317,6 +434,7 @@ class AppController(QObject):
             self.send_command(stop_command(channel))
 
     def stop_all(self) -> None:
+        self._clear_test_tracking("Stopped")
         self.send_command(stopall_command())
 
     def run_selected(self, pulses: int) -> None:
@@ -327,5 +445,6 @@ class AppController(QObject):
         self._append_log(
             "Selected-action compatibility fallback: expanding Run Selected into per-channel RUN commands."
         )
+        self._begin_test_tracking("counted", pulses)
         for channel in self._state.selected_channels:
             self.send_command(run_command(channel, pulses))
