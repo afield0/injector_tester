@@ -325,8 +325,6 @@ class MainWindow(QMainWindow):
 
         self.run_selected_button = QPushButton("Run Selected")
         self.stop_all_button = QPushButton("Stop All")
-        self.read_status_button = QPushButton("Read Status")
-        self.help_button = QPushButton("Help")
         self.stop_all_button.setStyleSheet(
             "background-color: #b91c1c; color: white; font-weight: 700; min-height: 44px;"
         )
@@ -336,23 +334,13 @@ class MainWindow(QMainWindow):
         self.stop_all_button.setToolTip(
             "Emergency stop for all four channels regardless of the checkbox selection."
         )
-        self.read_status_button.setToolTip(
-            "Query the firmware and refresh the status table with the current live state."
-        )
-        self.help_button.setToolTip(
-            "Request the firmware HELP text and protocol summary."
-        )
 
         self.run_selected_button.clicked.connect(self._run_selected)
         self.stop_all_button.clicked.connect(self._controller.stop_all)
-        self.read_status_button.clicked.connect(self._controller.refresh_status)
-        self.help_button.clicked.connect(self._controller.request_help)
 
-        layout.addWidget(self.selected_action_mode_label, 0, 0, 1, 4)
-        layout.addWidget(self.run_selected_button, 1, 0, 1, 2)
-        layout.addWidget(self.read_status_button, 1, 2)
-        layout.addWidget(self.help_button, 1, 3)
-        layout.addWidget(self.stop_all_button, 2, 0, 1, 4)
+        layout.addWidget(self.selected_action_mode_label, 0, 0, 1, 2)
+        layout.addWidget(self.run_selected_button, 1, 0)
+        layout.addWidget(self.stop_all_button, 1, 1)
 
         return group
 
