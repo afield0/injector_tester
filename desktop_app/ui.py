@@ -47,7 +47,6 @@ class MainWindow(QMainWindow):
 
         controller.state_changed.connect(self.render)
         self._refresh_ports()
-        self._sync_run_mode()
         self.render(controller.state)
 
     def _build_safety_banner(self) -> QGroupBox:
@@ -126,10 +125,10 @@ class MainWindow(QMainWindow):
         self.duty_spin.setDecimals(1)
         self.duty_spin.setValue(25.0)
 
-        self.run_mode_combo = QComboBox()
-        self.run_mode_combo.addItem("Continuous", "continuous")
-        self.run_mode_combo.addItem("Counted Pulses", "counted")
-        self.run_mode_combo.currentIndexChanged.connect(self._sync_run_mode)
+        self.test_mode_combo = QComboBox()
+        self.test_mode_combo.addItem("All", "all")
+        self.test_mode_combo.addItem("Sequential", "sequential")
+        self.test_mode_combo.currentIndexChanged.connect(self._sync_test_mode)
 
         self.auto_poll_checkbox = QCheckBox("Auto-poll STATUS after test start")
         self.auto_poll_checkbox.stateChanged.connect(self._sync_auto_poll_enabled)
@@ -148,7 +147,7 @@ class MainWindow(QMainWindow):
         layout.addRow("Model", self.model_combo)
         layout.addRow("RPM", self.rpm_spin)
         layout.addRow("Duty %", self.duty_spin)
-        layout.addRow("Run Mode", self.run_mode_combo)
+        layout.addRow("Test Mode", self.test_mode_combo)
         layout.addRow("Pulse Count", self.pulses_spin)
         layout.addRow(self.auto_poll_checkbox)
         layout.addRow("Poll Interval", self.auto_poll_interval_combo)
@@ -184,7 +183,7 @@ class MainWindow(QMainWindow):
             "background-color: #b91c1c; color: white; font-weight: 700; min-height: 44px;"
         )
         self.run_selected_button.setToolTip(
-            "Apply the current model, RPM, and duty to the checked channels, then run them using the selected run mode."
+            "Apply the current model, RPM, duty, and pulse count to the checked channels, then run them using the selected test mode."
         )
         self.stop_all_button.setToolTip(
             "Emergency stop for all four channels regardless of the checkbox selection."
@@ -283,9 +282,8 @@ class MainWindow(QMainWindow):
     def _connect_port(self) -> None:
         self._controller.connect_port(self.port_combo.currentText().strip())
 
-    def _sync_run_mode(self) -> None:
-        counted = self.run_mode_combo.currentData() == "counted"
-        self.pulses_spin.setEnabled(counted)
+    def _sync_test_mode(self) -> None:
+        self._controller.set_test_mode(str(self.test_mode_combo.currentData()))
 
     def _sync_auto_poll_enabled(self) -> None:
         self._controller.set_auto_poll_enabled(self.auto_poll_checkbox.isChecked())
@@ -303,21 +301,18 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _apply_run_config(self) -> None:
-        self._controller.set_model(int(self.model_combo.currentData()))
-        self._controller.apply_channel_settings(self.rpm_spin.value(), self.duty_spin.value())
-
     def _run_selected(self) -> None:
         if not self._validate_run_config():
             return
-        self._apply_run_config()
-        if self.run_mode_combo.currentData() == "counted":
-            if not self.pulses_spin.text().strip():
-                self._controller.report_validation_error("Pulse count is required before sending commands")
-                return
-            self._controller.run_selected(self.pulses_spin.value())
+        if not self.pulses_spin.text().strip():
+            self._controller.report_validation_error("Pulse count is required before sending commands")
             return
-        self._controller.start_selected()
+        self._controller.run_selected_test(
+            int(self.model_combo.currentData()),
+            self.rpm_spin.value(),
+            self.duty_spin.value(),
+            self.pulses_spin.value(),
+        )
 
     def _sync_selected_channels(self) -> None:
         channels = [index + 1 for index, checkbox in enumerate(self.channel_checks) if checkbox.isChecked()]
@@ -367,6 +362,12 @@ class MainWindow(QMainWindow):
             self.auto_poll_checkbox.blockSignals(True)
             self.auto_poll_checkbox.setChecked(state.auto_poll_enabled)
             self.auto_poll_checkbox.blockSignals(False)
+
+        test_mode_index = self.test_mode_combo.findData(state.test_mode)
+        if test_mode_index >= 0 and self.test_mode_combo.currentIndex() != test_mode_index:
+            self.test_mode_combo.blockSignals(True)
+            self.test_mode_combo.setCurrentIndex(test_mode_index)
+            self.test_mode_combo.blockSignals(False)
 
         self.progress_label.setText(state.test_progress.label)
         self.progress_bar.setRange(state.test_progress.minimum, state.test_progress.maximum)

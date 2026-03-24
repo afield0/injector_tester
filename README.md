@@ -24,6 +24,11 @@ PyInstaller packaging is intentionally deferred until the grouped-command workfl
 
 Grouped selected-channel command semantics are defined as follows: `Start Selected` and `Run Selected` initialize all selected outputs from the inactive phase and apply timing state together as part of one command handling path. This is the operator-visible meaning of grouped selected-channel actions once mask commands are used end-to-end.
 
+The desktop GUI now exposes two operator-facing test modes:
+
+- `All`: all checked channels receive the current configuration and run together for the requested pulse count.
+- `Sequential`: the GUI runs checked channels one at a time for counted-pulse tests, advancing automatically after each channel finishes.
+
 ## UI Buttons
 
 Operator-facing button meanings:
@@ -31,7 +36,8 @@ Operator-facing button meanings:
 - `Connect`: Open the selected serial port at the application baud rate and begin reading firmware responses.
 - `Disconnect`: Close the current serial port connection.
 - `Refresh Ports`: Re-scan available serial ports and update the port selector.
-- `Run Selected`: Apply the current model, RPM, and duty values to the checked channels, then run only those checked channels using the selected run mode. In `Counted Pulses` mode, the configured pulse count is sent to each checked channel. In `Continuous` mode, this starts the checked channels continuously.
+- `Run Selected`: Apply the current model, RPM, duty, and pulse count to the checked channels, then run only those checked channels using the selected test mode.
+- `Test Mode`: Choose whether checked channels run together (`All`) or one at a time (`Sequential`).
 - `Stop All`: Stop all four channels, ignoring which channel checkboxes are selected. This is the operator’s global stop action and is intentionally more visually prominent in the UI.
 - `Read Status`: Request live firmware status and refresh the summary and per-channel status table.
 - `Help`: Request the firmware help text and protocol summary.
@@ -40,7 +46,9 @@ Important operator differences:
 
 - `Run Selected` is the only selected-channel action button. It uses the checkbox selection and always applies the current configuration before output activity starts.
 - `Stop All` ignores the checkbox selection and stops every output. It is the broad stop action for the whole bench and should be treated as the immediate all-channel stop.
-- In `Continuous` mode, `Run Selected` applies config and starts the checked channels continuously. In `Counted Pulses` mode, it applies config and then runs the checked channels for the configured pulse count.
+- The GUI now runs counted-pulse tests only.
+- In `All`, `Run Selected` applies config and runs all checked channels for the configured pulse count together.
+- In `Sequential`, the GUI automatically runs `CH1`, `CH2`, `CH3`, and `CH4` in the order selected by the checkboxes' channel numbers, skipping unchecked channels.
 - `Read Status` and `Help` are informational. They do not change injector output state.
 
 ## Run
