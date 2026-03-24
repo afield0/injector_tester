@@ -263,15 +263,18 @@ class MainWindow(QMainWindow):
         self.connect_button.clicked.connect(self._connect_port)
         self.disconnect_button = QPushButton("Disconnect")
         self.disconnect_button.clicked.connect(self._controller.disconnect_port)
-        self.verify_status_button = QPushButton("Verify")
-        self.verify_status_button.clicked.connect(self._controller.refresh_status)
+        self.verify_status_button = QPushButton("Verify Connection")
+        self.verify_status_button.clicked.connect(self._controller.verify_connection)
         connect_row.addWidget(self.connect_button)
         connect_row.addWidget(self.disconnect_button)
         connect_row.addWidget(self.verify_status_button)
 
+        self.verification_status_label = QLabel("Connection not verified")
+        self.verification_status_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addRow("Port", port_row)
         layout.addRow("Connection", connect_row)
-        layout.addRow(QLabel("Use Next to continue after verifying controller status."))
+        layout.addRow("Verification", self.verification_status_label)
+        layout.addRow(QLabel("Use Next only after connecting and verifying communication."))
         return page
 
     def _build_test_type_page(self) -> QWidget:
@@ -611,7 +614,14 @@ class MainWindow(QMainWindow):
             )
         )
         self.wizard_back_button.setEnabled(index > 0)
-        self.wizard_next_button.setEnabled(index < total - 1)
+        can_advance = index < total - 1
+        if index == 0:
+            can_advance = (
+                can_advance
+                and self._controller.state.connected
+                and self._controller.state.connection_verified
+            )
+        self.wizard_next_button.setEnabled(can_advance)
 
     def _sync_auto_poll_enabled(self, checked: bool) -> None:
         self._controller.set_auto_poll_enabled(checked)
@@ -930,6 +940,8 @@ class MainWindow(QMainWindow):
             self.port_combo.setCurrentIndex(selected_port_index)
             self.port_combo.blockSignals(False)
         self._update_connection_controls(state.connected)
+        self.verification_status_label.setText(state.verification_message)
+        self._update_wizard_navigation()
         self.selected_action_mode_label.setText(state.selected_action_mode_label)
         if state.has_error:
             if state.last_error_message != self._last_displayed_error:
