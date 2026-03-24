@@ -75,11 +75,11 @@ class AppState:
     )
     connection_port: str | None = None
     connected: bool = False
-    test_mode: str = "all"
+    test_mode: str = "sequential"
     firmware_status: FirmwareStatus = field(default_factory=FirmwareStatus)
     test_progress: TestProgress = field(default_factory=TestProgress)
-    auto_poll_enabled: bool = False
-    auto_poll_interval_ms: int = 500
+    auto_poll_enabled: bool = True
+    auto_poll_interval_ms: int = 1000
     selected_mask: int = 1
     status_message: str = "Disconnected"
     last_error_message: str = ""

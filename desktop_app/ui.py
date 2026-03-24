@@ -128,9 +128,11 @@ class MainWindow(QMainWindow):
         self.test_mode_combo = QComboBox()
         self.test_mode_combo.addItem("All", "all")
         self.test_mode_combo.addItem("Sequential", "sequential")
+        self.test_mode_combo.setCurrentIndex(1)
         self.test_mode_combo.currentIndexChanged.connect(self._sync_test_mode)
 
         self.auto_poll_checkbox = QCheckBox("Auto-poll STATUS after test start")
+        self.auto_poll_checkbox.setChecked(True)
         self.auto_poll_checkbox.stateChanged.connect(self._sync_auto_poll_enabled)
 
         self.auto_poll_interval_combo = QComboBox()
@@ -138,6 +140,7 @@ class MainWindow(QMainWindow):
         self.auto_poll_interval_combo.addItem("0.5 s", 500)
         self.auto_poll_interval_combo.addItem("1.0 s", 1000)
         self.auto_poll_interval_combo.addItem("2.0 s", 2000)
+        self.auto_poll_interval_combo.setCurrentIndex(2)
         self.auto_poll_interval_combo.currentIndexChanged.connect(self._sync_auto_poll_interval)
 
         self.pulses_spin = QSpinBox()
@@ -149,8 +152,6 @@ class MainWindow(QMainWindow):
         layout.addRow("Duty %", self.duty_spin)
         layout.addRow("Test Mode", self.test_mode_combo)
         layout.addRow("Pulse Count", self.pulses_spin)
-        layout.addRow(self.auto_poll_checkbox)
-        layout.addRow("Poll Interval", self.auto_poll_interval_combo)
         return group
 
     def _build_channel_selection_panel(self) -> QGroupBox:
@@ -179,6 +180,7 @@ class MainWindow(QMainWindow):
         self.stop_all_button = QPushButton("Stop All")
         self.read_status_button = QPushButton("Read Status")
         self.help_button = QPushButton("Help")
+        self.poll_interval_label = QLabel("Poll Interval")
         self.stop_all_button.setStyleSheet(
             "background-color: #b91c1c; color: white; font-weight: 700; min-height: 44px;"
         )
@@ -201,10 +203,13 @@ class MainWindow(QMainWindow):
         self.help_button.clicked.connect(self._controller.request_help)
 
         layout.addWidget(self.selected_action_mode_label, 0, 0, 1, 4)
-        layout.addWidget(self.run_selected_button, 1, 0, 1, 2)
-        layout.addWidget(self.read_status_button, 1, 2)
-        layout.addWidget(self.help_button, 1, 3)
-        layout.addWidget(self.stop_all_button, 2, 0, 1, 4)
+        layout.addWidget(self.auto_poll_checkbox, 1, 0, 1, 2)
+        layout.addWidget(self.poll_interval_label, 1, 2)
+        layout.addWidget(self.auto_poll_interval_combo, 1, 3)
+        layout.addWidget(self.run_selected_button, 2, 0, 1, 2)
+        layout.addWidget(self.read_status_button, 2, 2)
+        layout.addWidget(self.help_button, 2, 3)
+        layout.addWidget(self.stop_all_button, 3, 0, 1, 4)
 
         return group
 

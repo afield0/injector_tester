@@ -29,6 +29,12 @@ The desktop GUI now exposes two operator-facing test modes:
 - `All`: all checked channels receive the current configuration and run together for the requested pulse count.
 - `Sequential`: the GUI runs checked channels one at a time for counted-pulse tests, advancing automatically after each channel finishes.
 
+Default desktop behavior:
+
+- `Sequential` is the default test mode.
+- Auto-polling is enabled by default at `1.0 s`.
+- Auto-poll controls are shown in the `Actions` panel.
+
 ## UI Buttons
 
 Operator-facing button meanings:
@@ -38,6 +44,8 @@ Operator-facing button meanings:
 - `Refresh Ports`: Re-scan available serial ports and update the port selector.
 - `Run Selected`: Apply the current model, RPM, duty, and pulse count to the checked channels, then run only those checked channels using the selected test mode.
 - `Test Mode`: Choose whether checked channels run together (`All`) or one at a time (`Sequential`).
+- `Auto-poll STATUS after test start`: Enable periodic status refresh while a test is active.
+- `Poll Interval`: Choose the auto-poll cadence from the `Actions` panel.
 - `Stop All`: Stop all four channels, ignoring which channel checkboxes are selected. This is the operator’s global stop action and is intentionally more visually prominent in the UI.
 - `Read Status`: Request live firmware status and refresh the summary and per-channel status table.
 - `Help`: Request the firmware help text and protocol summary.
