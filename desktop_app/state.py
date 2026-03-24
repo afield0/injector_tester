@@ -75,6 +75,8 @@ class AppState:
     )
     connection_port: str | None = None
     connected: bool = False
+    connection_verified: bool = False
+    verification_message: str = "Connection not verified"
     test_mode: str = "sequential"
     firmware_status: FirmwareStatus = field(default_factory=FirmwareStatus)
     test_progress: TestProgress = field(default_factory=TestProgress)
@@ -133,6 +135,7 @@ class AppController(QObject):
         self._sequential_current_channel: int | None = None
         self._sequential_completed_channels = 0
         self._sequential_current_started = False
+        self._pending_verification = False
 
         transport.connection_changed.connect(self._on_connection_changed)
         transport.raw_line_received.connect(self._on_raw_line)
@@ -260,12 +263,15 @@ class AppController(QObject):
                     connection_port=port,
                     status_message=f"Connected: {port} via {backend}",
                     last_error_message="",
+                    connection_verified=False,
+                    verification_message="Connection opened. Verify connection before continuing.",
                 )
             )
             self.send_command(help_command())
             self.refresh_status()
             return
 
+        self._pending_verification = False
         self._clear_test_tracking()
         self._set_state(
             replace(
@@ -274,6 +280,8 @@ class AppController(QObject):
                 connection_port=None,
                 status_message="Disconnected",
                 last_error_message="",
+                connection_verified=False,
+                verification_message="Connection not verified",
             )
         )
 
@@ -291,6 +299,15 @@ class AppController(QObject):
 
     @Slot(object)
     def _on_error(self, response: ErrorResponse) -> None:
+        if self._pending_verification:
+            self._pending_verification = False
+            self._set_state(
+                replace(
+                    self._state,
+                    connection_verified=False,
+                    verification_message="Verification failed due to device error response.",
+                )
+            )
         self._set_error(f"ERR: {response.message}")
 
     @Slot(object)
@@ -317,6 +334,13 @@ class AppController(QObject):
         )
         channels = tuple(self._channel_from_status(channel) for channel in response.channels)
         progress = self._derive_test_progress(channels)
+        verification_message = self._state.verification_message
+        connection_verified = self._state.connection_verified
+        if self._pending_verification:
+            connection_verified = True
+            verification_message = "Connection verified via STATUS probe."
+            self._pending_verification = False
+
         self._set_state(
             replace(
                 self._state,
@@ -325,6 +349,8 @@ class AppController(QObject):
                 channels=channels,
                 status_message="Status updated",
                 last_error_message="",
+                connection_verified=connection_verified,
+                verification_message=verification_message,
             )
         )
         self._update_poll_timer()
@@ -477,12 +503,21 @@ class AppController(QObject):
         self._start_next_sequential_counted_channel()
 
     def connect_port(self, port: str, baudrate: int = 115200) -> None:
+        self._pending_verification = False
+        self._set_state(
+            replace(
+                self._state,
+                connection_verified=False,
+                verification_message="Connection not verified",
+            )
+        )
         self._transport.open(SerialConfig(port=port, baudrate=baudrate))
 
     def list_ports(self) -> tuple[str, ...]:
         return tuple(port.system_location for port in self._transport.enumerate_ports())
 
     def disconnect_port(self) -> None:
+        self._pending_verification = False
         self._transport.close()
 
     def send_command(self, command: Command) -> None:
@@ -511,6 +546,20 @@ class AppController(QObject):
         self.send_command(model_command(model))
 
     def refresh_status(self) -> None:
+        self.send_command(status_command())
+
+    def verify_connection(self) -> None:
+        if not self._state.connected:
+            self._set_error("Connect to a controller before verification")
+            return
+        self._pending_verification = True
+        self._set_state(
+            replace(
+                self._state,
+                connection_verified=False,
+                verification_message="Verification in progress...",
+            )
+        )
         self.send_command(status_command())
 
     def request_help(self) -> None:
