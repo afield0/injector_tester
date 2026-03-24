@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Injector Tester")
         self.resize(1240, 820)
         self._build_menu_bar()
+        self._build_serial_log_window()
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -124,10 +125,24 @@ class MainWindow(QMainWindow):
         if 1000 in self._poll_interval_actions:
             self._poll_interval_actions[1000].setChecked(True)
 
+        view_menu = menu_bar.addMenu("View")
+        self.show_serial_log_action = QAction("Serial Log", self)
+        self.show_serial_log_action.triggered.connect(self._show_serial_log_window)
+        view_menu.addAction(self.show_serial_log_action)
+
         help_menu = menu_bar.addMenu("Help")
         self.about_action = QAction("About", self)
         self.about_action.triggered.connect(self._show_about_dialog)
         help_menu.addAction(self.about_action)
+
+    def _build_serial_log_window(self) -> None:
+        self.serial_log_window = QWidget(self, Qt.WindowType.Window)
+        self.serial_log_window.setWindowTitle("Serial Log")
+        self.serial_log_window.resize(900, 360)
+        layout = QVBoxLayout(self.serial_log_window)
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        layout.addWidget(self.log_text)
 
     def _build_error_banner(self) -> QGroupBox:
         group = QGroupBox("Errors")
@@ -347,9 +362,7 @@ class MainWindow(QMainWindow):
     def _build_status_and_log_splitter(self) -> QSplitter:
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self._build_status_table_group())
-        splitter.addWidget(self._build_log_group())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 1)
         return splitter
 
     def _build_status_table_group(self) -> QGroupBox:
@@ -388,14 +401,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.progress_label)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_table)
-        return group
-
-    def _build_log_group(self) -> QGroupBox:
-        group = QGroupBox("Raw Serial Log")
-        layout = QVBoxLayout(group)
-        self.log_text = QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        layout.addWidget(self.log_text)
         return group
 
     def _refresh_ports(self) -> None:
@@ -461,6 +466,11 @@ class MainWindow(QMainWindow):
             "PySide6 desktop client for the injector test bench.\n"
             "Supports basic counted testing, advanced test setup, live status reads, and serial log inspection.",
         )
+
+    def _show_serial_log_window(self) -> None:
+        self.serial_log_window.show()
+        self.serial_log_window.raise_()
+        self.serial_log_window.activateWindow()
 
     def _validate_run_config(self) -> bool:
         if not self.rpm_spin.text().strip():
