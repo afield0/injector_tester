@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -131,17 +133,18 @@ class MainWindow(QMainWindow):
         self._selected_port: str | None = None
         self._port_actions: dict[str, QAction] = {}
         self._poll_interval_actions: dict[int, QAction] = {}
+        self._last_displayed_error: str = ""
         self.setWindowTitle("Injector Tester")
         self.resize(1240, 820)
         self._build_menu_bar()
         self._build_serial_log_window()
+        self._build_error_log_window()
         self._build_deadtime_window()
 
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
-        layout.addWidget(self._build_error_banner())
         layout.addWidget(self._build_top_panels())
         layout.addWidget(self._build_action_panel())
         layout.addWidget(self._build_status_and_log_splitter(), stretch=1)
@@ -211,6 +214,9 @@ class MainWindow(QMainWindow):
         self.show_serial_log_action = QAction("Serial Log", self)
         self.show_serial_log_action.triggered.connect(self._show_serial_log_window)
         view_menu.addAction(self.show_serial_log_action)
+        self.show_error_log_action = QAction("Error Log", self)
+        self.show_error_log_action.triggered.connect(self._show_error_log_window)
+        view_menu.addAction(self.show_error_log_action)
 
         help_menu = menu_bar.addMenu("Help")
         self.about_action = QAction("About", self)
@@ -258,18 +264,14 @@ class MainWindow(QMainWindow):
         curve_button_row.addStretch(1)
         layout.addLayout(curve_button_row)
 
-    def _build_error_banner(self) -> QGroupBox:
-        group = QGroupBox("Errors")
-        layout = QVBoxLayout(group)
-        self.error_label = QLabel("No current errors.")
-        self.error_label.setWordWrap(True)
-        self.error_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.error_label.setStyleSheet(
-            "background-color: #fff1f0; color: #9f1239; border: 2px solid #dc2626; "
-            "padding: 10px; font-weight: 700;"
-        )
-        layout.addWidget(self.error_label)
-        return group
+    def _build_error_log_window(self) -> None:
+        self.error_log_window = QWidget(self, Qt.WindowType.Window)
+        self.error_log_window.setWindowTitle("Error Log")
+        self.error_log_window.resize(760, 320)
+        layout = QVBoxLayout(self.error_log_window)
+        self.error_log_text = QPlainTextEdit()
+        self.error_log_text.setReadOnly(True)
+        layout.addWidget(self.error_log_text)
 
     def _build_top_panels(self) -> QWidget:
         container = QWidget()
@@ -579,10 +581,22 @@ class MainWindow(QMainWindow):
         self.serial_log_window.raise_()
         self.serial_log_window.activateWindow()
 
+    def _show_error_log_window(self) -> None:
+        self.error_log_window.show()
+        self.error_log_window.raise_()
+        self.error_log_window.activateWindow()
+
     def _show_deadtime_window(self) -> None:
         self.deadtime_window.show()
         self.deadtime_window.raise_()
         self.deadtime_window.activateWindow()
+
+    def _record_error(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        existing_text = self.error_log_text.toPlainText()
+        entry = f"[{timestamp}] {message}"
+        self.error_log_text.setPlainText(f"{existing_text}\n{entry}".strip())
+        self.error_log_text.verticalScrollBar().setValue(self.error_log_text.verticalScrollBar().maximum())
 
     def _validate_run_config(self) -> bool:
         if not self.rpm_spin.text().strip():
@@ -863,11 +877,12 @@ class MainWindow(QMainWindow):
         self.disconnect_action.setEnabled(state.connected)
         self.selected_action_mode_label.setText(state.selected_action_mode_label)
         if state.has_error:
-            self.error_label.setText(state.last_error_message)
-            self.error_label.show()
+            if state.last_error_message != self._last_displayed_error:
+                self._record_error(state.last_error_message)
+                QMessageBox.critical(self, "Injector Tester Error", state.last_error_message)
+                self._last_displayed_error = state.last_error_message
         else:
-            self.error_label.setText("No current errors.")
-            self.error_label.hide()
+            self._last_displayed_error = ""
         self.status_summary_label.setText(
             "MODEL "
             f"{state.firmware_status.model} | "
