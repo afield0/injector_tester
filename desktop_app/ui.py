@@ -202,7 +202,6 @@ class MainWindow(QMainWindow):
         layout.addRow("Model", self.model_combo)
         layout.addRow("RPM", self.rpm_spin)
         layout.addRow("Duty %", self.duty_spin)
-        layout.addRow("Test Mode", self.test_mode_combo)
         layout.addRow("Pulse Count", self.pulses_spin)
         return page
 
@@ -320,6 +319,11 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Channel Selection")
         layout = QVBoxLayout(group)
         self.channel_checks: list[QCheckBox] = []
+
+        test_mode_row = QHBoxLayout()
+        test_mode_row.addWidget(QLabel("Test Mode"))
+        test_mode_row.addWidget(self.test_mode_combo, stretch=1)
+        layout.addLayout(test_mode_row)
 
         for channel in range(1, 5):
             checkbox = QCheckBox(f"CH{channel}")
