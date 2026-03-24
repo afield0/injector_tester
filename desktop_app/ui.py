@@ -44,10 +44,15 @@ class DeadtimeGraphWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._curve: tuple[DeadtimePoint, ...] = ()
+        self._marker_point: DeadtimePoint | None = None
         self.setMinimumHeight(220)
 
     def set_curve(self, curve: tuple[DeadtimePoint, ...]) -> None:
         self._curve = tuple(sorted(curve, key=lambda point: point.voltage))
+        self.update()
+
+    def set_marker_point(self, point: DeadtimePoint | None) -> None:
+        self._marker_point = point
         self.update()
 
     def paintEvent(self, _event: object) -> None:
@@ -108,6 +113,12 @@ class DeadtimeGraphWidget(QWidget):
         painter.setBrush(QColor("#0f766e"))
         for point in points:
             painter.drawEllipse(point, 4, 4)
+
+        if self._marker_point is not None:
+            marker = map_point(self._marker_point)
+            painter.setPen(QPen(QColor("#b91c1c"), 2))
+            painter.drawLine(marker.x() - 6, marker.y() - 6, marker.x() + 6, marker.y() + 6)
+            painter.drawLine(marker.x() - 6, marker.y() + 6, marker.x() + 6, marker.y() - 6)
 
 
 class MainWindow(QMainWindow):
@@ -234,10 +245,16 @@ class MainWindow(QMainWindow):
         curve_button_row = QHBoxLayout()
         self.deadtime_add_row_button = QPushButton("Add Row")
         self.deadtime_remove_row_button = QPushButton("Remove Selected Row")
+        self.deadtime_move_up_button = QPushButton("Move Up")
+        self.deadtime_move_down_button = QPushButton("Move Down")
         self.deadtime_add_row_button.clicked.connect(self._handle_add_deadtime_curve_row)
         self.deadtime_remove_row_button.clicked.connect(self._remove_selected_deadtime_curve_row)
+        self.deadtime_move_up_button.clicked.connect(self._move_selected_deadtime_curve_row_up)
+        self.deadtime_move_down_button.clicked.connect(self._move_selected_deadtime_curve_row_down)
         curve_button_row.addWidget(self.deadtime_add_row_button)
         curve_button_row.addWidget(self.deadtime_remove_row_button)
+        curve_button_row.addWidget(self.deadtime_move_up_button)
+        curve_button_row.addWidget(self.deadtime_move_down_button)
         curve_button_row.addStretch(1)
         layout.addLayout(curve_button_row)
 
@@ -364,7 +381,7 @@ class MainWindow(QMainWindow):
         deadtime_layout = QVBoxLayout(deadtime_group)
         self.deadtime_window_button = QPushButton("Open Deadtime Configuration")
         self.deadtime_window_button.clicked.connect(self._show_deadtime_window)
-        self.deadtime_curve_summary_label = QLabel()
+        self.deadtime_curve_summary_label = QLabel("Interpolated Deadtime: 0.000 ms")
         self.deadtime_curve_summary_label.setWordWrap(True)
         self.deadtime_curve_summary_label.setTextFormat(Qt.TextFormat.PlainText)
         deadtime_layout.addWidget(self.deadtime_window_button)
@@ -374,7 +391,6 @@ class MainWindow(QMainWindow):
         outputs_group = QGroupBox("Computed Outputs")
         outputs_layout = QFormLayout(outputs_group)
         self.advanced_model_value_label = QLabel("0 - 4-stroke")
-        self.advanced_deadtime_value_label = QLabel("0.000 ms")
         self.advanced_pulse_count_value_label = QLabel("0")
         self.advanced_effective_open_time_value_label = QLabel("0.000 ms")
         self.advanced_commanded_pw_value_label = QLabel("0.000 ms")
@@ -387,7 +403,6 @@ class MainWindow(QMainWindow):
         )
 
         outputs_layout.addRow("Derived Model", self.advanced_model_value_label)
-        outputs_layout.addRow("Interpolated Deadtime", self.advanced_deadtime_value_label)
         outputs_layout.addRow("Pulse Count", self.advanced_pulse_count_value_label)
         outputs_layout.addRow("Effective Open / Pulse", self.advanced_effective_open_time_value_label)
         outputs_layout.addRow("Commanded Pulse Width", self.advanced_commanded_pw_value_label)
@@ -635,6 +650,44 @@ class MainWindow(QMainWindow):
         self._update_deadtime_curve_views()
         self._refresh_advanced_calculation()
 
+    def _move_selected_deadtime_curve_row_up(self) -> None:
+        self._move_selected_deadtime_curve_row(-1)
+
+    def _move_selected_deadtime_curve_row_down(self) -> None:
+        self._move_selected_deadtime_curve_row(1)
+
+    def _move_selected_deadtime_curve_row(self, direction: int) -> None:
+        selected_rows = sorted(
+            {index.row() for index in self.deadtime_curve_table.selectionModel().selectedRows()}
+        )
+        if len(selected_rows) != 1:
+            return
+
+        source_row = selected_rows[0]
+        target_row = source_row + direction
+        if target_row < 0 or target_row >= self.deadtime_curve_table.rowCount():
+            return
+
+        row_values = []
+        for row in (source_row, target_row):
+            values: list[str] = []
+            for column in range(self.deadtime_curve_table.columnCount()):
+                item = self.deadtime_curve_table.item(row, column)
+                values.append("" if item is None else item.text())
+            row_values.append(values)
+
+        self._updating_deadtime_table = True
+        for column, value in enumerate(row_values[1]):
+            self.deadtime_curve_table.setItem(source_row, column, QTableWidgetItem(value))
+        for column, value in enumerate(row_values[0]):
+            self.deadtime_curve_table.setItem(target_row, column, QTableWidgetItem(value))
+        self._updating_deadtime_table = False
+
+        self.deadtime_curve_table.clearSelection()
+        self.deadtime_curve_table.selectRow(target_row)
+        self._update_deadtime_curve_views()
+        self._refresh_advanced_calculation()
+
     def _on_deadtime_curve_changed(self, *_args: object) -> None:
         if self._updating_deadtime_table:
             return
@@ -644,17 +697,12 @@ class MainWindow(QMainWindow):
     def _update_deadtime_curve_views(self) -> None:
         curve, errors = self._read_deadtime_curve()
         self.deadtime_graph.set_curve(curve)
+        self.deadtime_graph.set_marker_point(None)
         if errors:
             self.deadtime_curve_summary_label.setText("\n".join(errors))
             return
         if not curve:
-            self.deadtime_curve_summary_label.setText("No deadtime points configured.")
-            return
-        sorted_curve = sorted(curve, key=lambda point: point.voltage)
-        self.deadtime_curve_summary_label.setText(
-            f"{len(sorted_curve)} points loaded. "
-            f"Voltage range {sorted_curve[0].voltage:.2f} V to {sorted_curve[-1].voltage:.2f} V."
-        )
+            self.deadtime_curve_summary_label.setText("Interpolated Deadtime: 0.000 ms")
 
     def _sync_injector_size_from_lb_hr(self, *_args: object) -> None:
         if self._syncing_injector_size:
@@ -731,9 +779,16 @@ class MainWindow(QMainWindow):
 
         self._latest_advanced_result = result
         self.advanced_model_value_label.setText("0 - 4-stroke")
-        self.advanced_deadtime_value_label.setText(
-            f"{result.interpolated_deadtime_ms:.3f} ms @ {result.applied_voltage:.2f} V"
+        self.deadtime_curve_summary_label.setText(
+            f"Interpolated Deadtime: {result.interpolated_deadtime_ms:.3f} ms @ {result.applied_voltage:.2f} V"
         )
+        if not table_errors and curve:
+            self.deadtime_graph.set_marker_point(
+                DeadtimePoint(
+                    voltage=result.applied_voltage,
+                    deadtime_ms=result.interpolated_deadtime_ms,
+                )
+            )
         self.advanced_pulse_count_value_label.setText(
             f"{result.pulse_count} ({result.raw_pulse_count:.3f} exact)"
         )
