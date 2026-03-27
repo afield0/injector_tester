@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -38,6 +39,7 @@ from .advanced_testing import (
     default_deadtime_curve,
     lb_per_hour_from_cc_per_min,
 )
+from .injector_profile import InjectorProfile, dump_injector_profile, load_injector_profile
 from .state import AppController, AppState
 
 
@@ -152,6 +154,13 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("File")
+        self.load_injector_data_action = QAction("Load Injector Data...", self)
+        self.load_injector_data_action.triggered.connect(self._load_injector_data)
+        file_menu.addAction(self.load_injector_data_action)
+        self.save_injector_data_action = QAction("Save Injector Data...", self)
+        self.save_injector_data_action.triggered.connect(self._save_injector_data)
+        file_menu.addAction(self.save_injector_data_action)
+        file_menu.addSeparator()
         self.exit_action = QAction("Exit", self)
         self.exit_action.triggered.connect(self.close)
         file_menu.addAction(self.exit_action)
@@ -399,11 +408,19 @@ class MainWindow(QMainWindow):
 
         deadtime_group = QGroupBox("Deadtime Configuration")
         deadtime_layout = QVBoxLayout(deadtime_group)
+        injector_data_row = QHBoxLayout()
+        self.load_injector_data_button = QPushButton("Load Injector Data")
+        self.save_injector_data_button = QPushButton("Save Injector Data")
+        self.load_injector_data_button.clicked.connect(self._load_injector_data)
+        self.save_injector_data_button.clicked.connect(self._save_injector_data)
+        injector_data_row.addWidget(self.load_injector_data_button)
+        injector_data_row.addWidget(self.save_injector_data_button)
         self.deadtime_window_button = QPushButton("Open Deadtime Configuration")
         self.deadtime_window_button.clicked.connect(self._show_deadtime_window)
         self.deadtime_curve_summary_label = QLabel("Interpolated Deadtime: 0.000 ms")
         self.deadtime_curve_summary_label.setWordWrap(True)
         self.deadtime_curve_summary_label.setTextFormat(Qt.TextFormat.PlainText)
+        deadtime_layout.addLayout(injector_data_row)
         deadtime_layout.addWidget(self.deadtime_window_button)
         deadtime_layout.addWidget(self.deadtime_curve_summary_label)
         layout.addWidget(deadtime_group)
@@ -687,6 +704,66 @@ class MainWindow(QMainWindow):
         self.deadtime_window.raise_()
         self.deadtime_window.activateWindow()
 
+    def _load_injector_data(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Load Injector Data",
+            "",
+            "Injector Data (*.inj *.txt);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                profile = load_injector_profile(handle.read())
+        except OSError as exc:
+            self._controller.report_validation_error(f"Failed to read injector data: {exc}")
+            return
+        except ValueError as exc:
+            self._controller.report_validation_error(f"Invalid injector data: {exc}")
+            return
+
+        self._apply_injector_profile(profile)
+        self.statusBar().showMessage(f"Loaded injector data from {path}")
+
+    def _save_injector_data(self) -> None:
+        curve, errors = self._read_deadtime_curve()
+        if errors:
+            self._controller.report_validation_error(
+                "Cannot save injector data until deadtime curve errors are resolved."
+            )
+            return
+        if not curve:
+            self._controller.report_validation_error(
+                "Cannot save injector data without at least one deadtime curve row."
+            )
+            return
+
+        profile = InjectorProfile(
+            injector_lb_per_hour=self.advanced_injector_lb_hr_spin.value(),
+            injector_cc_per_min=self.advanced_injector_cc_min_spin.value(),
+            deadtime_curve=curve,
+        )
+
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Injector Data",
+            "injector_data.inj",
+            "Injector Data (*.inj *.txt);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(dump_injector_profile(profile))
+        except OSError as exc:
+            self._controller.report_validation_error(f"Failed to save injector data: {exc}")
+            return
+
+        self.statusBar().showMessage(f"Saved injector data to {path}")
+
     def _record_error(self, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         existing_text = self.error_log_text.toPlainText()
@@ -753,6 +830,20 @@ class MainWindow(QMainWindow):
             self._add_deadtime_curve_row(point.voltage, point.deadtime_ms)
         self._updating_deadtime_table = False
         self._update_deadtime_curve_views()
+
+    def _apply_injector_profile(self, profile: InjectorProfile) -> None:
+        self._syncing_injector_size = True
+        self.advanced_injector_lb_hr_spin.setValue(profile.injector_lb_per_hour)
+        self.advanced_injector_cc_min_spin.setValue(profile.injector_cc_per_min)
+        self._syncing_injector_size = False
+
+        self._updating_deadtime_table = True
+        self.deadtime_curve_table.setRowCount(0)
+        for point in profile.deadtime_curve:
+            self._add_deadtime_curve_row(point.voltage, point.deadtime_ms)
+        self._updating_deadtime_table = False
+        self._update_deadtime_curve_views()
+        self._refresh_advanced_calculation()
 
     def _add_deadtime_curve_row(
         self,

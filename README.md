@@ -34,6 +34,7 @@ Default desktop behavior:
 - `Sequential` is the default test mode.
 - Auto-polling is enabled by default at `1.0 s`.
 - Auto-poll controls are available on the execution step.
+- Injector data can be loaded and saved from the GUI using a simple text profile that stores injector flow and deadtime curve points.
 
 ## Wizard Flow
 
