@@ -43,14 +43,22 @@ if HAVE_PYSIDE6:
 
 @unittest.skipUnless(HAVE_PYSIDE6, "PySide6 is not installed")
 class AppControllerVerificationTests(unittest.TestCase):
-    def test_connect_triggers_version_and_status_verification(self) -> None:
+    def test_connect_waits_for_ready_before_initial_probe(self) -> None:
         transport = FakeTransport()
         controller = AppController(transport)
 
         controller.connect_port("/dev/ttyFAKE0")
 
-        self.assertEqual(["HELP", "VERSION", "STATUS"], transport.sent_lines)
+        self.assertEqual([], transport.sent_lines)
         self.assertFalse(controller.state.connection_verified)
+        self.assertEqual(
+            "Connection opened. Waiting for controller startup...",
+            controller.state.verification_message,
+        )
+
+        transport.ready_received.emit(object())
+
+        self.assertEqual(["VERSION", "STATUS"], transport.sent_lines)
         self.assertEqual("Verification in progress...", controller.state.verification_message)
 
         transport.version_received.emit(VersionResponse("1.1.0"))
@@ -78,6 +86,7 @@ class AppControllerVerificationTests(unittest.TestCase):
         controller = AppController(transport)
 
         controller.connect_port("/dev/ttyFAKE0")
+        transport.ready_received.emit(object())
         transport.version_received.emit(VersionResponse("1.0.0"))
 
         self.assertFalse(controller.state.connection_verified)

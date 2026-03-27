@@ -135,6 +135,7 @@ class AppState:
 class AppController(QObject):
     state_changed = Signal(object)
     log_message = Signal(str)
+    _INITIAL_PROBE_TIMEOUT_MS = 1500
 
     def __init__(self, transport: SerialManager) -> None:
         super().__init__()
@@ -142,6 +143,9 @@ class AppController(QObject):
         self._state = AppState()
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self.refresh_status)
+        self._startup_probe_timer = QTimer(self)
+        self._startup_probe_timer.setSingleShot(True)
+        self._startup_probe_timer.timeout.connect(self._send_initial_probe)
         self._tracked_test_mask = 0
         self._tracked_total_pulses = 0
         self._tracked_total_channels = 0
@@ -154,6 +158,7 @@ class AppController(QObject):
         self._pending_verification = False
         self._pending_version_match = False
         self._pending_status_probe = False
+        self._initial_probe_pending = False
 
         transport.connection_changed.connect(self._on_connection_changed)
         transport.raw_line_received.connect(self._on_raw_line)
@@ -192,6 +197,8 @@ class AppController(QObject):
         self._pending_verification = False
         self._pending_version_match = False
         self._pending_status_probe = False
+        self._initial_probe_pending = False
+        self._startup_probe_timer.stop()
 
     def _begin_connection_verification(self, message: str) -> None:
         self._pending_verification = True
@@ -206,6 +213,17 @@ class AppController(QObject):
         )
         self.send_command(version_command())
         self.send_command(status_command())
+
+    def _schedule_initial_probe(self) -> None:
+        self._initial_probe_pending = True
+        self._startup_probe_timer.start(self._INITIAL_PROBE_TIMEOUT_MS)
+
+    def _send_initial_probe(self) -> None:
+        if not self._initial_probe_pending or not self._state.connected:
+            return
+        self._initial_probe_pending = False
+        self._startup_probe_timer.stop()
+        self._begin_connection_verification("Verification in progress...")
 
     def _complete_verification_if_ready(self) -> None:
         if not self._pending_verification:
@@ -319,12 +337,11 @@ class AppController(QObject):
                     status_message=f"Connected: {port} via {backend}",
                     last_error_message="",
                     connection_verified=False,
-                    verification_message="Connection opened. Verifying controller...",
+                    verification_message="Connection opened. Waiting for controller startup...",
                     firmware_version="Unknown",
                 )
             )
-            self.send_command(help_command())
-            self._begin_connection_verification("Verification in progress...")
+            self._schedule_initial_probe()
             return
 
         self._reset_verification_tracking()
@@ -349,10 +366,12 @@ class AppController(QObject):
     @Slot(object)
     def _on_ready(self, response: ReadyResponse) -> None:
         self._clear_error(response.message)
+        self._send_initial_probe()
 
     @Slot(object)
     def _on_help(self, response: HelpResponse) -> None:
         self._set_state(replace(self._state, help_text="\n".join(response.lines)))
+        self._send_initial_probe()
 
     @Slot(object)
     def _on_version(self, response: VersionResponse) -> None:
