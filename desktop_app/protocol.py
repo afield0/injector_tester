@@ -207,12 +207,7 @@ class ResponseParser:
         clean = line.strip()
 
         if self._pending_help is not None:
-            if not clean:
-                self._pending_help.append(clean)
-                pending = HelpResponse(tuple(self._pending_help))
-                self._pending_help = None
-                return [pending]
-            if self._is_help_line(clean):
+            if not clean or self._is_help_line(clean):
                 self._pending_help.append(clean)
                 return []
             pending = HelpResponse(tuple(self._pending_help))
@@ -262,17 +257,15 @@ class ResponseParser:
 
     @staticmethod
     def _is_help_line(line: str) -> bool:
-        if line == "Models:":
-            return True
-        if re.match(r"^\d+\s*=\s+", line):
+        if not line:
             return True
         if line.startswith("OK ") or line.startswith("ERR ") or line == "Injector mask-ISR controller ready":
             return False
         if ResponseParser._looks_like_status_header(line):
             return False
-
-        first_token = line.split(maxsplit=1)[0]
-        return bool(re.match(r"^[A-Z][A-Z0-9_-]*$", first_token))
+        if line.startswith("VERSION "):
+            return False
+        return True
 
     def _finish_status(self) -> StatusResponse:
         assert self._pending_status is not None

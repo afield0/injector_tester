@@ -25,15 +25,24 @@ class ResponseParserTests(unittest.TestCase):
             "  SET <channel 1-4> <rpm> <dutyPercent>",
             "  SETMASK <mask 1-15> <rpm> <dutyPercent>",
             "",
+            "Grouped mask semantics:",
+            "  STARTMASK and RUNMASK initialize selected outputs from the",
+            "  inactive phase and apply timing state together in one path.",
+            "",
+            "Models:",
+            "  0 = 4-stroke, 1 event per 2 revs (Hz = RPM/120)",
+            "  1 = 1 event per rev            (Hz = RPM/60)",
+            "VERSION 1.1.0",
         )
 
         responses = []
         for line in lines:
             responses.extend(parser.feed_line(line))
 
-        self.assertEqual(2, len(responses))
+        self.assertEqual(3, len(responses))
         self.assertIsInstance(responses[0], ReadyResponse)
         self.assertIsInstance(responses[1], HelpResponse)
+        self.assertEqual(VersionResponse("1.1.0"), responses[2])
         self.assertEqual(
             (
                 "Commands:",
@@ -44,6 +53,13 @@ class ResponseParserTests(unittest.TestCase):
                 "SET <channel 1-4> <rpm> <dutyPercent>",
                 "SETMASK <mask 1-15> <rpm> <dutyPercent>",
                 "",
+                "Grouped mask semantics:",
+                "STARTMASK and RUNMASK initialize selected outputs from the",
+                "inactive phase and apply timing state together in one path.",
+                "",
+                "Models:",
+                "0 = 4-stroke, 1 event per 2 revs (Hz = RPM/120)",
+                "1 = 1 event per rev            (Hz = RPM/60)",
             ),
             responses[1].lines,
         )
