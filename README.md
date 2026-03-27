@@ -8,7 +8,7 @@ The repository now includes a PySide6 desktop client in [desktop_app](desktop_ap
 
 - `ui.py`: Qt widgets only. It renders immutable view state and forwards user intent.
 - `transport.py`: Serial I/O only. It owns backend selection, OS-specific serial behavior, line delivery, and protocol event emission.
-- `protocol.py`: Firmware command builders and response parsers for `HELP`, `STATUS`, `MODEL`, `SET`, `START`, `RUN`, `STOP`, `STARTALL`, and `STOPALL`.
+- `protocol.py`: Firmware command builders and response parsers for `HELP`, `STATUS`, `VERSION`, `MODEL`, `SET`, `START`, `RUN`, `STOP`, `STARTALL`, and `STOPALL`.
 - `state.py`: Application controller and immutable app state. Selected channels are stored as a 4-bit mask for future grouped operations.
 
 ## Packaging
@@ -48,6 +48,7 @@ Connection requirements:
 - Step 1 must be completed before advancing.
 - `Next` remains disabled until the controller is connected and connection verification succeeds.
 - Verification is required before the test setup pages can be used.
+- Connection verification checks both a `VERSION` response and a `STATUS` response from the controller.
 
 Test configuration:
 

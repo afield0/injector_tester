@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from .protocol import (
     CHANNEL_MASK_ALL,
+    EXPECTED_FIRMWARE_VERSION,
     ChannelStatus,
     Command,
     CommandName,
@@ -15,6 +16,7 @@ from .protocol import (
     OkResponse,
     ReadyResponse,
     StatusResponse,
+    VersionResponse,
     channel_to_mask,
     help_command,
     mask_to_channels,
@@ -26,6 +28,7 @@ from .protocol import (
     status_command,
     stop_command,
     stopall_command,
+    version_command,
 )
 from .transport import SerialConfig, SerialManager
 
@@ -78,6 +81,8 @@ class AppState:
     connected: bool = False
     connection_verified: bool = False
     verification_message: str = "Connection not verified"
+    firmware_version: str = "Unknown"
+    expected_firmware_version: str = EXPECTED_FIRMWARE_VERSION
     test_mode: str = "sequential"
     wizard_step: int = 0
     selected_test_kind: Literal["simple", "advanced"] | None = None
@@ -147,11 +152,14 @@ class AppController(QObject):
         self._sequential_completed_channels = 0
         self._sequential_current_started = False
         self._pending_verification = False
+        self._pending_version_match = False
+        self._pending_status_probe = False
 
         transport.connection_changed.connect(self._on_connection_changed)
         transport.raw_line_received.connect(self._on_raw_line)
         transport.ready_received.connect(self._on_ready)
         transport.help_received.connect(self._on_help)
+        transport.version_received.connect(self._on_version)
         transport.acknowledgement_received.connect(self._on_ack)
         transport.error_received.connect(self._on_error)
         transport.status_received.connect(self._on_status)
@@ -179,6 +187,39 @@ class AppController(QObject):
 
     def _set_status_message(self, message: str) -> None:
         self._set_state(replace(self._state, status_message=message))
+
+    def _reset_verification_tracking(self) -> None:
+        self._pending_verification = False
+        self._pending_version_match = False
+        self._pending_status_probe = False
+
+    def _begin_connection_verification(self, message: str) -> None:
+        self._pending_verification = True
+        self._pending_version_match = False
+        self._pending_status_probe = False
+        self._set_state(
+            replace(
+                self._state,
+                connection_verified=False,
+                verification_message=message,
+            )
+        )
+        self.send_command(version_command())
+        self.send_command(status_command())
+
+    def _complete_verification_if_ready(self) -> None:
+        if not self._pending_verification:
+            return
+        if self._pending_version_match and self._pending_status_probe:
+            version = self._state.firmware_version
+            self._reset_verification_tracking()
+            self._set_state(
+                replace(
+                    self._state,
+                    connection_verified=True,
+                    verification_message=f"Connection verified. Firmware version {version}.",
+                )
+            )
 
     @staticmethod
     def _validate_rpm(rpm: float) -> str | None:
@@ -278,14 +319,15 @@ class AppController(QObject):
                     status_message=f"Connected: {port} via {backend}",
                     last_error_message="",
                     connection_verified=False,
-                    verification_message="Connection opened. Verify connection before continuing.",
+                    verification_message="Connection opened. Verifying controller...",
+                    firmware_version="Unknown",
                 )
             )
             self.send_command(help_command())
-            self.refresh_status()
+            self._begin_connection_verification("Verification in progress...")
             return
 
-        self._pending_verification = False
+        self._reset_verification_tracking()
         self._clear_test_tracking()
         self._set_state(
             replace(
@@ -296,6 +338,7 @@ class AppController(QObject):
                 last_error_message="",
                 connection_verified=False,
                 verification_message="Connection not verified",
+                firmware_version="Unknown",
             )
         )
 
@@ -312,9 +355,39 @@ class AppController(QObject):
         self._set_state(replace(self._state, help_text="\n".join(response.lines)))
 
     @Slot(object)
+    def _on_version(self, response: VersionResponse) -> None:
+        verification_message = self._state.verification_message
+        connection_verified = self._state.connection_verified
+
+        if self._pending_verification:
+            if response.version != self._state.expected_firmware_version:
+                self._reset_verification_tracking()
+                connection_verified = False
+                verification_message = (
+                    "Verification failed: firmware version mismatch "
+                    f"(expected {self._state.expected_firmware_version}, got {response.version})."
+                )
+            else:
+                self._pending_version_match = True
+                if not self._pending_status_probe:
+                    verification_message = (
+                        f"Firmware version {response.version} accepted. Waiting for STATUS response..."
+                    )
+
+        self._set_state(
+            replace(
+                self._state,
+                firmware_version=response.version,
+                connection_verified=connection_verified,
+                verification_message=verification_message,
+            )
+        )
+        self._complete_verification_if_ready()
+
+    @Slot(object)
     def _on_error(self, response: ErrorResponse) -> None:
         if self._pending_verification:
-            self._pending_verification = False
+            self._reset_verification_tracking()
             self._set_state(
                 replace(
                     self._state,
@@ -351,9 +424,13 @@ class AppController(QObject):
         verification_message = self._state.verification_message
         connection_verified = self._state.connection_verified
         if self._pending_verification:
-            connection_verified = True
-            verification_message = "Connection verified via STATUS probe."
-            self._pending_verification = False
+            self._pending_status_probe = True
+            if self._pending_version_match:
+                verification_message = (
+                    f"Firmware version {self._state.firmware_version} accepted. Completing verification..."
+                )
+            else:
+                verification_message = "STATUS received. Waiting for firmware version response..."
 
         self._set_state(
             replace(
@@ -367,6 +444,7 @@ class AppController(QObject):
                 verification_message=verification_message,
             )
         )
+        self._complete_verification_if_ready()
         self._update_poll_timer()
         self._advance_sequential_counted_run(channels)
 
@@ -517,12 +595,13 @@ class AppController(QObject):
         self._start_next_sequential_counted_channel()
 
     def connect_port(self, port: str, baudrate: int = 115200) -> None:
-        self._pending_verification = False
+        self._reset_verification_tracking()
         self._set_state(
             replace(
                 self._state,
                 connection_verified=False,
                 verification_message="Connection not verified",
+                firmware_version="Unknown",
             )
         )
         self._transport.open(SerialConfig(port=port, baudrate=baudrate))
@@ -531,7 +610,7 @@ class AppController(QObject):
         return tuple(port.system_location for port in self._transport.enumerate_ports())
 
     def disconnect_port(self) -> None:
-        self._pending_verification = False
+        self._reset_verification_tracking()
         self._transport.close()
 
     def send_command(self, command: Command) -> None:
@@ -609,15 +688,7 @@ class AppController(QObject):
         if not self._state.connected:
             self._set_error("Connect to a controller before verification")
             return
-        self._pending_verification = True
-        self._set_state(
-            replace(
-                self._state,
-                connection_verified=False,
-                verification_message="Verification in progress...",
-            )
-        )
-        self.send_command(status_command())
+        self._begin_connection_verification("Verification in progress...")
 
     def request_help(self) -> None:
         self.send_command(help_command())

@@ -4,7 +4,15 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
-from .protocol import ErrorResponse, HelpResponse, OkResponse, ReadyResponse, ResponseParser, StatusResponse
+from .protocol import (
+    ErrorResponse,
+    HelpResponse,
+    OkResponse,
+    ReadyResponse,
+    ResponseParser,
+    StatusResponse,
+    VersionResponse,
+)
 
 try:
     from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
@@ -141,6 +149,7 @@ class SerialManager(QObject):
     status_received = Signal(object)
     help_received = Signal(object)
     ready_received = Signal(object)
+    version_received = Signal(object)
 
     _fallback_open_requested = Signal(object)
     _fallback_send_requested = Signal(str)
@@ -329,3 +338,5 @@ class SerialManager(QObject):
                 self.help_received.emit(response)
             elif isinstance(response, ReadyResponse):
                 self.ready_received.emit(response)
+            elif isinstance(response, VersionResponse):
+                self.version_received.emit(response)

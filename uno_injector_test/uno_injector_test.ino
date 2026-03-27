@@ -16,6 +16,7 @@
   Serial commands:
     HELP
     STATUS
+    VERSION
     MODEL <0|1>
     SET <channel> <rpm> <dutyPercent>
     SETMASK <mask 1-15> <rpm> <dutyPercent>
@@ -45,6 +46,7 @@
 // Configuration
 // -----------------------------
 static const uint8_t NUM_CHANNELS = 4;
+static const char FIRMWARE_VERSION[] = "1.1.0";
 
 // Logical channel bits used by the control masks.
 static const uint8_t CH1_BIT = _BV(0);
@@ -532,6 +534,7 @@ void printHelp() {
   Serial.println(F("Commands:"));
   Serial.println(F("  HELP"));
   Serial.println(F("  STATUS"));
+  Serial.println(F("  VERSION"));
   Serial.println(F("  MODEL <0|1>"));
   Serial.println(F("  SET <channel 1-4> <rpm> <dutyPercent>"));
   Serial.println(F("  SETMASK <mask 1-15> <rpm> <dutyPercent>"));
@@ -608,6 +611,11 @@ void printStatus() {
   }
 }
 
+void printVersion() {
+  Serial.print(F("VERSION "));
+  Serial.println(FIRMWARE_VERSION);
+}
+
 // -----------------------------
 // Serial command handling
 // -----------------------------
@@ -626,6 +634,11 @@ void handleCommand(String line) {
 
   if (cmd == "STATUS") {
     printStatus();
+    return;
+  }
+
+  if (cmd == "VERSION") {
+    printVersion();
     return;
   }
 

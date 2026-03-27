@@ -271,9 +271,12 @@ class MainWindow(QMainWindow):
 
         self.verification_status_label = QLabel("Connection not verified")
         self.verification_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.firmware_version_label = QLabel("Unknown")
+        self.firmware_version_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addRow("Port", port_row)
         layout.addRow("Connection", connect_row)
         layout.addRow("Verification", self.verification_status_label)
+        layout.addRow("Firmware", self.firmware_version_label)
         layout.addRow(QLabel("Use Next only after connecting and verifying communication."))
         return page
 
@@ -1003,6 +1006,9 @@ class MainWindow(QMainWindow):
             self.port_combo.blockSignals(False)
         self._update_connection_controls(state.connected)
         self.verification_status_label.setText(state.verification_message)
+        self.firmware_version_label.setText(
+            f"{state.firmware_version} (expected {state.expected_firmware_version})"
+        )
         self._update_wizard_navigation()
         self.selected_action_mode_label.setText(state.selected_action_mode_label)
         if state.has_error:
@@ -1013,6 +1019,8 @@ class MainWindow(QMainWindow):
         else:
             self._last_displayed_error = ""
         self.status_summary_label.setText(
+            "FW "
+            f"{state.firmware_version} | "
             "MODEL "
             f"{state.firmware_status.model} | "
             f"TICK_US {state.firmware_status.tick_us} | "

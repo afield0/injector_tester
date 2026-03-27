@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 from typing import Iterable, Sequence
 
 
 CHANNEL_MASK_ALL = 0x0F
+EXPECTED_FIRMWARE_VERSION = "1.1.0"
 
 
 def channel_to_mask(channel: int) -> int:
@@ -29,6 +31,7 @@ def mask_to_channels(mask: int) -> tuple[int, ...]:
 class CommandName(str, Enum):
     HELP = "HELP"
     STATUS = "STATUS"
+    VERSION = "VERSION"
     MODEL = "MODEL"
     SET = "SET"
     START = "START"
@@ -55,6 +58,10 @@ def help_command() -> Command:
 
 def status_command() -> Command:
     return Command(CommandName.STATUS)
+
+
+def version_command() -> Command:
+    return Command(CommandName.VERSION)
 
 
 def model_command(model: int) -> Command:
@@ -123,6 +130,11 @@ class ReadyResponse:
 
 
 @dataclass(frozen=True)
+class VersionResponse:
+    version: str
+
+
+@dataclass(frozen=True)
 class OkResponse:
     command: CommandName
     detail: tuple[str, ...] = ()
@@ -142,7 +154,7 @@ class StatusResponse:
     channels: tuple[ChannelStatus, ...]
 
 
-Response = HelpResponse | ReadyResponse | OkResponse | ErrorResponse | StatusResponse
+Response = HelpResponse | ReadyResponse | VersionResponse | OkResponse | ErrorResponse | StatusResponse
 
 
 def _parse_hex(value: str) -> int:
@@ -195,7 +207,12 @@ class ResponseParser:
         clean = line.strip()
 
         if self._pending_help is not None:
-            if not clean or self._is_help_line(clean):
+            if not clean:
+                self._pending_help.append(clean)
+                pending = HelpResponse(tuple(self._pending_help))
+                self._pending_help = None
+                return [pending]
+            if self._is_help_line(clean):
                 self._pending_help.append(clean)
                 return []
             pending = HelpResponse(tuple(self._pending_help))
@@ -221,6 +238,12 @@ class ResponseParser:
             self._pending_status = [clean]
             return []
 
+        if clean.startswith("VERSION "):
+            version = clean.partition(" ")[2].strip()
+            if not version:
+                return [ErrorResponse("Invalid VERSION response")]
+            return [VersionResponse(version)]
+
         if clean.startswith("OK "):
             return [_parse_ok(clean)]
 
@@ -239,13 +262,17 @@ class ResponseParser:
 
     @staticmethod
     def _is_help_line(line: str) -> bool:
-        return (
-            line == "Models:"
-            or line in {name.value for name in CommandName}
-            or line.startswith("0 = ")
-            or line.startswith("1 = ")
-            or any(line.startswith(f"{name.value} ") for name in CommandName)
-        )
+        if line == "Models:":
+            return True
+        if re.match(r"^\d+\s*=\s+", line):
+            return True
+        if line.startswith("OK ") or line.startswith("ERR ") or line == "Injector mask-ISR controller ready":
+            return False
+        if ResponseParser._looks_like_status_header(line):
+            return False
+
+        first_token = line.split(maxsplit=1)[0]
+        return bool(re.match(r"^[A-Z][A-Z0-9_-]*$", first_token))
 
     def _finish_status(self) -> StatusResponse:
         assert self._pending_status is not None
@@ -263,6 +290,8 @@ class ResponseParser:
 def describe_response(response: Response) -> str:
     if isinstance(response, ReadyResponse):
         return response.message
+    if isinstance(response, VersionResponse):
+        return f"VERSION {response.version}"
     if isinstance(response, ErrorResponse):
         return f"ERR {response.message}"
     if isinstance(response, HelpResponse):
